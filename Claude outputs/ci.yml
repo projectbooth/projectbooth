@@ -1,0 +1,554 @@
+# First CI workflow in this repo (2026-09-01) — covers catalog-service
+# (test, then build+push its image) and, added the same day once they
+# existed, platform-sdk + platform-cli (lint+test only — they're a library
+# and a CLI tool, not something that gets built into a container image).
+# `gateway` (platform-gateway-auth branch, 2026-09-02) joined as a fourth
+# path/package — build+push like catalog-service (it's a container image
+# too), wired the same way that one was: a paths-filter output, a
+# test-<pkg> job, a build-and-push-<pkg> job. `ui-shell` (feature/ui-shell-
+# scaffold, 2026-09-04) joined as a fifth the same way — Node/npm instead of
+# pip, `npm run build` standing in for a real test suite since there's
+# nothing to unit-test in a static placeholder page yet (see that package's
+# own README). The full path-filtered matrix
+# ARCHITECTURE.md §10 and CONTRIBUTING.md describe (markdownlint, yamllint,
+# shellcheck, hadolint, helm lint) is still aspirational — add those jobs as
+# the pieces they'd actually check show up, same "don't build what the
+# current phase doesn't need yet" pattern the rest of this repo follows.
+# This file's own path filter below is deliberately narrow for the same
+# reason: it shouldn't fire on changes that have nothing to do with any of
+# these four packages.
+# `src/modules/**` joined the `gateway` filter (feature/gateway-module-catalog, 2026-09-09,
+# ui-shell-plan.md item 6) — build-and-push-gateway now generates a static module catalog from
+# that directory as a CI step before its Docker build, so a module-only change has to flow through
+# gateway's own test+build+push, not just platform-cli's (which already watches src/modules/*
+# indirectly via its own tests, but never triggers a gateway rebuild on its own).
+# 2026-09-11: each of the three build-and-push* jobs gained a step that bumps its Deployment's
+# `platform.io/git-sha` pod-template annotation and pushes that straight back to the triggering
+# branch — closes docs/known-issues.md's recurring stale-pod gotcha (a moving `:dev` tag means
+# Synced/Healthy never proves a new image is actually running). See build-and-push's own step for
+# the full mechanism; the other two just reference it.
+name: CI
+
+on:
+  push:
+    branches: [dev, test, main]
+    paths:
+      - "src/core/catalog-service/**"
+      - "src/core/gateway/**"
+      - "src/core/ui-shell/**"
+      - "src/platform-sdk/**"
+      - "src/platform-cli/**"
+      # ui-shell-plan.md item 6: the static module catalog build-and-push-gateway now generates
+      # reads straight from src/modules/*/module.yaml — without this, a module-only change
+      # (adding/editing a module.yaml) triggered nothing at all, and gateway's deployed catalog
+      # would silently never reflect it. See build-and-push-gateway's own new step below.
+      - "src/modules/**"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    branches: [dev, test, main]
+    paths:
+      - "src/core/catalog-service/**"
+      - "src/core/gateway/**"
+      - "src/core/ui-shell/**"
+      - "src/platform-sdk/**"
+      - "src/platform-cli/**"
+      # ui-shell-plan.md item 6: the static module catalog build-and-push-gateway now generates
+      # reads straight from src/modules/*/module.yaml — without this, a module-only change
+      # (adding/editing a module.yaml) triggered nothing at all, and gateway's deployed catalog
+      # would silently never reflect it. See build-and-push-gateway's own new step below.
+      - "src/modules/**"
+      - ".github/workflows/ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  # Added alongside platform-sdk/platform-cli's own job below: with the top-
+  # level `paths:` filters above now matching FOUR independent packages, any
+  # change to any one of them fires the whole workflow — which, without this
+  # gate, meant a platform-sdk-only change would also spin up
+  # catalog-service's Postgres service container and run full Docker builds
+  # for BOTH catalog-service and gateway (and, on a push to dev/test/main,
+  # actually PUSH redundant images to GHCR under unchanged tags) despite
+  # neither having changed at all. This job computes which package(s)
+  # actually changed once, so `test`/`build-and-push`, `test-gateway`/
+  # `build-and-push-gateway`, and `test-platform-packages` below can each
+  # skip themselves when their own package didn't change — real cost/
+  # correctness fix, not just tidiness (an unnecessary GHCR push isn't
+  # dangerous, but it's not nothing either).
+  changes:
+    name: Detect which package(s) changed
+    runs-on: ubuntu-latest
+    outputs:
+      catalog_service: ${{ steps.filter.outputs.catalog_service }}
+      gateway: ${{ steps.filter.outputs.gateway }}
+      ui_shell: ${{ steps.filter.outputs.ui_shell }}
+      platform_packages: ${{ steps.filter.outputs.platform_packages }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            catalog_service:
+              - 'src/core/catalog-service/**'
+              - '.github/workflows/ci.yml'
+            gateway:
+              - 'src/core/gateway/**'
+              # ui-shell-plan.md item 6 — see the top-level `paths:` filter's own comment above for
+              # why this belongs in gateway's own filter specifically (its build now generates the
+              # static catalog from this directory) rather than a fifth standalone filter output.
+              - 'src/modules/**'
+              - '.github/workflows/ci.yml'
+            ui_shell:
+              - 'src/core/ui-shell/**'
+              - '.github/workflows/ci.yml'
+            platform_packages:
+              - 'src/platform-sdk/**'
+              - 'src/platform-cli/**'
+              - '.github/workflows/ci.yml'
+
+  test:
+    name: Test catalog-service
+    needs: changes
+    if: needs.changes.outputs.catalog_service == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/core/catalog-service
+    services:
+      # Real Postgres, not sqlite — tests/conftest.py runs the actual
+      # Alembic migrations against it and needs the enum types those
+      # migrations create (see models.py's create_type=False comment).
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: catalog_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: python -m pytest -v
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/catalog_test
+
+  build-and-push:
+    name: Build & push image
+    needs: [changes, test]
+    # Redundant with the fact that a skipped `test` already cascades to
+    # skip anything that `needs` it (GitHub Actions' default `if:
+    # success()` treats a skipped dependency as not-success) — written out
+    # explicitly anyway, same "explicit over implicit" preference as the
+    # rest of this repo's comments, so this job's own condition is legible
+    # without having to know that cascade rule.
+    if: needs.changes.outputs.catalog_service == 'true'
+    runs-on: ubuntu-latest
+    # contents: write joined packages: write 2026-09-11 (fixing docs/known-issues.md's recurring
+    # stale-pod gotcha) — the new "Record this build's commit SHA" step below needs it to push its
+    # own small commit. Still least-privilege: only this job (and its two siblings below) ever
+    # need either permission; `test` above still inherits only the workflow-level contents: read.
+    permissions:
+      contents: write
+      packages: write
+    env:
+      # Hardcoded, not derived from ${{ github.repository_owner }} — same
+      # "hardcoded, not derived — see the comment for where a fork
+      # personalizes it" pattern as repoURL/targetRevision in every self-
+      # referencing Argo CD Application (src/core/argocd/README.md). Two
+      # reasons to keep it hardcoded even though "projectbooth" (the org
+      # this lives under as of 2026-09-14 — previously a personal account,
+      # "dougallpercival") happens to already be lowercase: GHCR/OCI image
+      # references MUST be all-lowercase or the push is rejected outright,
+      # and a future owner-casing change would silently break a dynamic
+      # expression here with no lowercase guard of its own. If you fork
+      # this repo and want your own images, this is the other value you
+      # change, alongside repoURL.
+      IMAGE_NAME: ghcr.io/projectbooth/catalog-service
+    steps:
+      # fetch-depth: 0 (full history, not the default shallow depth-1) — the "Record this build's
+      # commit SHA" step below may need to `git fetch`/`rebase` against a newer remote tip if a
+      # second push landed while this job was building; that needs real shared history to work,
+      # not just the one commit a shallow clone gives you.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@v3
+      # Build-only on PRs (proves the Dockerfile still builds cleanly) —
+      # never push from a PR, and never even attempt to log in for one:
+      # a PR from a fork only gets a read-only GITHUB_TOKEN regardless, so
+      # this "if" is belt-and-suspenders on top of a restriction GitHub
+      # already enforces, not the only thing preventing it.
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: src/core/catalog-service
+          push: ${{ github.event_name == 'push' }}
+          # Tag = the branch name, matching ARCHITECTURE.md §10 / CONTRIBUTING.md's
+          # dev -> test -> main promotion model: :dev always means "whatever
+          # dev currently is", same as Argo CD's targetRevision already
+          # pointing at a branch rather than a pinned commit. A Deployment
+          # that wants a specific promoted version points at :test or :main
+          # instead — see manifests/catalog-service.yaml's own tag choice.
+          #
+          # NOT simply github.ref_name on both event types, though — that's
+          # what this line originally was, and it broke the very first real
+          # pull_request run: for a pull_request event, github.ref_name is
+          # "<pr-number>/merge" (the ref is refs/pull/<n>/merge), and a "/"
+          # inside the tag component is an invalid Docker reference —
+          # buildx fails with "invalid reference format" even though push
+          # (above) is already false, because buildx still validates --tag
+          # up front for a build-only run, before it ever gets to the point
+          # of deciding not to push it. The tag's actual value never matters
+          # on a PR build (nothing is pushed), so branch on event_name: push
+          # events keep the meaningful branch-name tag, pull_request events
+          # get a PR-numbered one instead — valid, and still useful for
+          # correlating a failed build with its PR if you're staring at the
+          # Actions cache. Caught 2026-09-01 via a real PR run (the
+          # feature/workspace-roles -> dev PR), not by local simulation —
+          # nothing before this had ever exercised the pull_request trigger
+          # for real.
+          tags: >-
+            ${{ github.event_name == 'push'
+            && format('{0}:{1}', env.IMAGE_NAME, github.ref_name)
+            || format('{0}:pr-{1}', env.IMAGE_NAME, github.event.pull_request.number) }}
+          # Links the image to this repo (Settings -> Packages shows
+          # "opendataplatform" as its source) so GHCR can inherit access
+          # permissions from the repo. Does NOT make the package public by
+          # itself — see docs/known-issues.md's "GHCR package defaults to
+          # private on first publish" entry for the one manual step still
+          # needed after this workflow's first successful run.
+          labels: |
+            org.opencontainers.image.source=https://github.com/projectbooth/projectbooth
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # 2026-09-11, fixing docs/known-issues.md's recurring stale-pod gotcha: `:dev` is a moving
+      # tag (see the `tags:` comment above), so Argo CD reporting Synced/Healthy after a merge
+      # never actually proves the new image got pulled — imagePullPolicy: Always only repulls on
+      # a real pod restart, and nothing about a floating tag's own Deployment spec changes when
+      # the tag's target moves. This step closes that gap the same way `kubectl rollout restart`
+      # always has: patch the pod template (not just the image reference) so Kubernetes has no
+      # choice but to roll new pods. Specifically, it bumps
+      # manifests/catalog-service.yaml's `platform.io/git-sha` pod-template annotation
+      # (.github/scripts/set-git-sha-annotation.sh — see that script's own comment for the exact
+      # mechanism and why a plain sed instead of a YAML-parsing tool) to this run's commit SHA,
+      # commits, and pushes straight back to the branch that triggered this build — same
+      # `GITHUB_TOKEN`-with-contents:-write pattern module-lifecycle.yml already established for
+      # its own git-write step, just inline here instead of a separate dispatched workflow, since
+      # there's no cross-service auth boundary to cross (unlike gateway's own git-write avoidance,
+      # this is CI writing to its own repo, not a running service holding a git credential).
+      #
+      # Never loops: this only ever touches manifests/catalog-service.yaml, which isn't in this
+      # file's own `paths:` filter above, so the commit it pushes can't retrigger this workflow —
+      # confirmed by inspection, not just assumed, and reinforced with `[skip ci]` below as
+      # defense in depth. Skipped entirely on a pull_request event (nothing was pushed to GHCR to
+      # even bump the annotation for) and quietly does nothing if the annotation's already at this
+      # SHA (defensive idempotency, not expected to matter in the normal one-push-at-a-time case).
+      # The small retry loop covers the one real race this creates: a second push landing on this
+      # branch while this job was still building — `git push` gets rejected non-fast-forward, so
+      # this rebases the one-line commit onto the new tip and retries, same shape as the "install
+      # module + Remove-click's own workflow commit" divergence this exact push/pull race produced
+      # live earlier this session, just handled automatically here instead of by hand.
+      - name: Record this build's commit SHA on the Deployment
+        if: github.event_name == 'push'
+        run: |
+          git checkout -B ${{ github.ref_name }}
+          git config user.name "ci-git-sha-bot"
+          git config user.email "ci-git-sha-bot@users.noreply.github.com"
+          bash .github/scripts/set-git-sha-annotation.sh src/core/argocd/manifests/catalog-service.yaml ${{ github.sha }}
+          if git diff --quiet; then
+            echo "Annotation already at this SHA — nothing to commit."
+            exit 0
+          fi
+          git add src/core/argocd/manifests/catalog-service.yaml
+          git commit -m "chore(catalog-service): bump deployed git-sha annotation to ${{ github.sha }} [skip ci]"
+          for attempt in 1 2 3; do
+            if git push; then
+              exit 0
+            fi
+            echo "Push rejected (likely a concurrent push to this branch) — retrying ($attempt/3)..."
+            git fetch origin ${{ github.ref_name }}
+            git rebase origin/${{ github.ref_name }}
+          done
+          echo "::error::Failed to push the git-sha annotation bump after 3 attempts"
+          exit 1
+
+  test-gateway:
+    name: Test gateway
+    needs: changes
+    if: needs.changes.outputs.gateway == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/core/gateway
+    # No `services: postgres` here, same reasoning as test-platform-packages
+    # below — gateway is stateless (see its own README: no live
+    # Keycloak/catalog-service needed either, everything's respx-mocked at
+    # the HTTP transport level, JWTs are signed with a throwaway in-test RSA
+    # keypair). A Postgres service container here would be pure dead weight.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: python -m pytest -v
+
+  build-and-push-gateway:
+    name: Build & push gateway image
+    needs: [changes, test-gateway]
+    # Same "written out explicitly, even though it's redundant with the
+    # skipped-dependency cascade" reasoning as build-and-push's own
+    # identical comment above.
+    if: needs.changes.outputs.gateway == 'true'
+    runs-on: ubuntu-latest
+    # contents: write + fetch-depth: 0 below: same reasoning as build-and-push's own identical
+    # comments above — this job's own "Record this build's commit SHA" step needs both.
+    permissions:
+      contents: write
+      packages: write
+    env:
+      # Same hardcoded-lowercase reasoning as build-and-push's IMAGE_NAME
+      # above — see that job's own comment.
+      IMAGE_NAME: ghcr.io/projectbooth/gateway
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Static module catalog (ui-shell-plan.md item 6, ARCHITECTURE.md §3: "platform-gateway
+      # reads a static module index built from every modules/*/module.yaml at release time").
+      # Generated here, as a plain CI step, rather than inside gateway's own Dockerfile: that
+      # build's context stays scoped to src/core/gateway (it genuinely can't see src/modules/ or
+      # platform-cli's parsing code as-is), and this way the module.yaml schema stays owned by
+      # platform-cli alone — no duplicated parsing logic, no cross-package Docker build context.
+      # Same two-step platform-sdk-then-platform-cli install order test-platform-packages already
+      # uses below (platform-cli depends on platform-sdk by name with no version pin — see that
+      # package's own pyproject.toml); no `[dev]` extras needed here, this step only ever imports
+      # and runs the installed `platform` command, it doesn't lint or test either package.
+      - name: Install platform-sdk (editable)
+        working-directory: src/platform-sdk
+        run: pip install -e .
+      - name: Install platform-cli (editable)
+        working-directory: src/platform-cli
+        run: pip install -e .
+      # Writes straight into gateway's own Docker build context, at the path
+      # settings.static_module_index_path (app/config.py) expects — gateway's Dockerfile already
+      # `COPY app ./app`s everything under there, so no Dockerfile change is needed for this file
+      # to end up in the built image. A malformed real module.yaml fails this step
+      # (ManifestError, non-zero exit) and blocks the image build/push below — free CI-side
+      # validation of the real module catalog, not a separate lint job.
+      - name: Generate static module catalog
+        run: platform module build-index src/core/gateway/app/module_catalog.json
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: src/core/gateway
+          push: ${{ github.event_name == 'push' }}
+          # Identical ternary to build-and-push's own `tags:` above, copied
+          # verbatim rather than re-derived — that job's own long comment
+          # explains exactly why a bare `github.ref_name` breaks on a
+          # pull_request event ("<pr>/merge" isn't a valid Docker tag
+          # component) and isn't repeated here to avoid the two copies
+          # drifting apart; this is the same bug, already fixed once, reused
+          # rather than risking reintroducing it.
+          tags: >-
+            ${{ github.event_name == 'push'
+            && format('{0}:{1}', env.IMAGE_NAME, github.ref_name)
+            || format('{0}:pr-{1}', env.IMAGE_NAME, github.event.pull_request.number) }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/projectbooth/projectbooth
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # Same mechanism as build-and-push's own identical step above (see that job's own long
+      # comment for the full "why") — gateway is the Deployment this gotcha has actually bitten,
+      # repeatedly, this session (docs/known-issues.md), so this is the job that matters most here.
+      - name: Record this build's commit SHA on the Deployment
+        if: github.event_name == 'push'
+        run: |
+          git checkout -B ${{ github.ref_name }}
+          git config user.name "ci-git-sha-bot"
+          git config user.email "ci-git-sha-bot@users.noreply.github.com"
+          bash .github/scripts/set-git-sha-annotation.sh src/core/argocd/manifests/gateway.yaml ${{ github.sha }}
+          if git diff --quiet; then
+            echo "Annotation already at this SHA — nothing to commit."
+            exit 0
+          fi
+          git add src/core/argocd/manifests/gateway.yaml
+          git commit -m "chore(gateway): bump deployed git-sha annotation to ${{ github.sha }} [skip ci]"
+          for attempt in 1 2 3; do
+            if git push; then
+              exit 0
+            fi
+            echo "Push rejected (likely a concurrent push to this branch) — retrying ($attempt/3)..."
+            git fetch origin ${{ github.ref_name }}
+            git rebase origin/${{ github.ref_name }}
+          done
+          echo "::error::Failed to push the git-sha annotation bump after 3 attempts"
+          exit 1
+
+  test-ui-shell:
+    name: Test ui-shell
+    needs: changes
+    if: needs.changes.outputs.ui_shell == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/core/ui-shell
+    # Vitest arrived feature/ui-shell-oauth (ui-shell-plan.md item 3) — real
+    # pure logic worth exercising now (PKCE math, expiry math, JWT-payload
+    # decoding), not a static placeholder page anymore. See
+    # src/core/ui-shell/README.md's "Running its tests" for what's covered
+    # vs. deliberately left to live verification.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: src/core/ui-shell/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      - run: npm test
+
+  build-and-push-ui-shell:
+    name: Build & push ui-shell image
+    needs: [changes, test-ui-shell]
+    # Same "written out explicitly, even though it's redundant with the
+    # skipped-dependency cascade" reasoning as build-and-push's own
+    # identical comment above.
+    if: needs.changes.outputs.ui_shell == 'true'
+    runs-on: ubuntu-latest
+    # contents: write + fetch-depth: 0 below: same reasoning as build-and-push's own identical
+    # comments above — this job's own "Record this build's commit SHA" step needs both.
+    permissions:
+      contents: write
+      packages: write
+    env:
+      # Same hardcoded-lowercase reasoning as build-and-push's IMAGE_NAME
+      # above — see that job's own comment.
+      IMAGE_NAME: ghcr.io/projectbooth/ui-shell
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: src/core/ui-shell
+          push: ${{ github.event_name == 'push' }}
+          # Identical ternary to build-and-push's own `tags:` above, copied
+          # verbatim rather than re-derived — see that job's own long
+          # comment for why a bare `github.ref_name` breaks on a
+          # pull_request event.
+          tags: >-
+            ${{ github.event_name == 'push'
+            && format('{0}:{1}', env.IMAGE_NAME, github.ref_name)
+            || format('{0}:pr-{1}', env.IMAGE_NAME, github.event.pull_request.number) }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/projectbooth/projectbooth
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # Same mechanism as build-and-push's own identical step above (see that job's own long
+      # comment for the full "why") — ui-shell is the OTHER Deployment this gotcha has actually
+      # bitten, repeatedly, this session (docs/known-issues.md).
+      - name: Record this build's commit SHA on the Deployment
+        if: github.event_name == 'push'
+        run: |
+          git checkout -B ${{ github.ref_name }}
+          git config user.name "ci-git-sha-bot"
+          git config user.email "ci-git-sha-bot@users.noreply.github.com"
+          bash .github/scripts/set-git-sha-annotation.sh src/core/argocd/manifests/ui-shell.yaml ${{ github.sha }}
+          if git diff --quiet; then
+            echo "Annotation already at this SHA — nothing to commit."
+            exit 0
+          fi
+          git add src/core/argocd/manifests/ui-shell.yaml
+          git commit -m "chore(ui-shell): bump deployed git-sha annotation to ${{ github.sha }} [skip ci]"
+          for attempt in 1 2 3; do
+            if git push; then
+              exit 0
+            fi
+            echo "Push rejected (likely a concurrent push to this branch) — retrying ($attempt/3)..."
+            git fetch origin ${{ github.ref_name }}
+            git rebase origin/${{ github.ref_name }}
+          done
+          echo "::error::Failed to push the git-sha annotation bump after 3 attempts"
+          exit 1
+
+  test-platform-packages:
+    name: Test platform-sdk + platform-cli
+    needs: changes
+    if: needs.changes.outputs.platform_packages == 'true'
+    runs-on: ubuntu-latest
+    # No `services: postgres` here, unlike `test` above — deliberately.
+    # Both packages' own tests are mocked at their own boundary (respx for
+    # platform-sdk's HTTP calls, Typer's CliRunner with PlatformClient
+    # monkeypatched for platform-cli) rather than run against a live
+    # catalog-service — see each package's own README for why. A shared job
+    # with catalog-service's `test` would either drag an unneeded Postgres
+    # container into every platform-sdk/platform-cli-only run or force an
+    # awkward conditional service block; two jobs cleanly matches two
+    # actually-different dependency shapes.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # platform-cli depends on platform-sdk by name with no version pin
+      # (see platform-cli/pyproject.toml — no published package to resolve
+      # against, just a sibling in this monorepo), so it has to install
+      # after platform-sdk is already present for pip's resolver to satisfy
+      # it with — same two-step order both packages' READMEs document for
+      # local dev, reproduced here rather than diverging from it.
+      - name: Install platform-sdk (editable, with dev extras)
+        working-directory: src/platform-sdk
+        run: pip install -e ".[dev]"
+      - name: Install platform-cli (editable, with dev extras)
+        working-directory: src/platform-cli
+        run: pip install -e ".[dev]"
+      - name: Lint + test platform-sdk
+        working-directory: src/platform-sdk
+        run: |
+          ruff check .
+          python -m pytest -v
+      - name: Lint + test platform-cli
+        working-directory: src/platform-cli
+        run: |
+          ruff check .
+          python -m pytest -v
+# chore: trigger CI on fresh repo (projectbooth cutover)

@@ -90,6 +90,16 @@ exception, and only conditionally — see its own bullet below.
   module in. `--dry-run` prints the generated manifest and stops before writing or committing
   anything (the requires check above still runs first, same as every other validation `install`
   does before `--dry-run`'s stop point).
+
+  **Wrapping a third-party chart (2026-09-14, feature/module-external-chart):** a `module.yaml`
+  with an `externalChart:` block (`repoURL`/`chart`/`version` — see `../modules/README.md`'s own
+  section, and `../modules/trino/module.yaml` for a real example) needs no `../charts/NAME/`
+  directory at all — `install` skips the "chart must exist, run `scaffold` first" check entirely
+  for these, and the `helm template` safety check runs straight against `externalChart`'s repo
+  instead of a local directory. `scaffold` itself still only ever generates the local-chart shape;
+  an external-chart `module.yaml` is hand-written. Setting `externalChart` while a
+  `../charts/NAME/` directory also exists is refused outright (ambiguous which chart Argo CD would
+  actually use) — remove one or the other.
 - `uninstall NAME` removes that file and commits + pushes the removal — Argo CD prunes the
   Deployment/Service, but leaves any PersistentVolumeClaim the chart marked
   `argocd.argoproj.io/sync-options: Delete=false` alone (ARCHITECTURE.md §3's documented default:

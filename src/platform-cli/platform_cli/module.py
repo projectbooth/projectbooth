@@ -101,6 +101,53 @@ def _run_helm_template(chart_dir: Path, values_yaml: str) -> None:
         raise ManifestError(f"`helm template {chart_dir}` failed:\n{result.stderr.strip()}")
 
 
+def _run_helm_template_external(manifest: ModuleManifest, values_yaml: str) -> None:
+    """Sibling to `_run_helm_template()` above, for a module whose `manifest.externalChart` is set
+    (2026-09-14, feature/module-external-chart — see `manifest.py`'s own docstring): same "warn and
+    skip if `helm` isn't on PATH, don't hard-block" fallback, but there's no local chart directory to
+    point at — `helm template` fetches the chart straight from its own upstream repo via `--repo`/
+    `--version` instead, the documented way to template a chart you haven't `helm repo add`ed."""
+    assert manifest.externalChart is not None
+    helm = shutil.which("helm")
+    if helm is None:
+        typer.secho(
+            "warning: `helm` not found on PATH — skipping the helm-template safety check. "
+            "The generated Application will still be written and pushed; if the chart is "
+            "actually broken, Argo CD will surface that as a degraded sync instead of this "
+            "command catching it up front.",
+            fg=typer.colors.YELLOW,
+        )
+        return
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+        f.write(values_yaml)
+        values_path = f.name
+    try:
+        result = subprocess.run(
+            [
+                helm,
+                "template",
+                manifest.id,
+                manifest.externalChart.chart,
+                "--repo",
+                manifest.externalChart.repoURL,
+                "--version",
+                manifest.externalChart.version,
+                "-f",
+                values_path,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        Path(values_path).unlink(missing_ok=True)
+    if result.returncode != 0:
+        raise ManifestError(
+            f"`helm template {manifest.externalChart.chart} --repo {manifest.externalChart.repoURL} "
+            f"--version {manifest.externalChart.version}` failed:\n{result.stderr.strip()}"
+        )
+
+
 @app.command("install")
 @handle_api_errors
 @handle_module_errors
@@ -128,23 +175,41 @@ def install(
     manifest_path = repo_root / MODULES_DIR / name / "module.yaml"
     manifest = load_module_manifest(manifest_path)
 
+    # 2026-09-14 (feature/module-external-chart, manifest.py's own docstring): a module's chart is
+    # either local (src/charts/<id>/, the original and still-default shape) or external
+    # (manifest.externalChart, pointing straight at the chart's own upstream Helm repo) — never
+    # both. Local is checked/required the same way it always was; external skips that check
+    # entirely, since there's no local directory for it to point at. A module.yaml that somehow
+    # has BOTH (externalChart set, and a local chart directory left behind or hand-created anyway)
+    # is ambiguous about which one Argo CD would actually use — refuse rather than silently pick.
     chart_dir = repo_root / CHARTS_DIR / manifest.id
-    if not chart_dir.is_dir():
-        raise ManifestError(
-            f"{manifest_path} validates, but its chart ({chart_dir}) doesn't exist — "
-            f"run `platform module scaffold {name}` first, or write the chart by hand."
-        )
+    if manifest.externalChart is not None:
+        if chart_dir.is_dir():
+            raise ManifestError(
+                f"{manifest_path} sets externalChart, but {chart_dir} also exists locally — "
+                "ambiguous which chart Argo CD would actually use. Remove one or the other."
+            )
+        chart_path = None
+    else:
+        if not chart_dir.is_dir():
+            raise ManifestError(
+                f"{manifest_path} validates, but its chart ({chart_dir}) doesn't exist — "
+                f"run `platform module scaffold {name}` first, or write the chart by hand."
+            )
+        chart_path = f"{CHARTS_DIR}/{manifest.id}"
 
     _check_requires(ctx, manifest, skip_requires_check)
 
     repo_url = repo_url_override or discover_repo_url(repo_root)
-    chart_path = f"{CHARTS_DIR}/{manifest.id}"
     application_yaml = render_application_manifest(manifest, repo_url=repo_url, chart_path=chart_path)
 
     # Re-derive just the values block for the helm-template check, so what's checked is exactly
     # what will be pushed, not a second independent computation of it.
     values_yaml = yaml.safe_load(application_yaml)["spec"]["source"]["helm"]["values"]
-    _run_helm_template(chart_dir, values_yaml)
+    if manifest.externalChart is not None:
+        _run_helm_template_external(manifest, values_yaml)
+    else:
+        _run_helm_template(chart_dir, values_yaml)
 
     if dry_run:
         typer.echo(f"--dry-run: would write {MODULES_ENABLED_DIR}/{manifest.id}.yaml:\n")

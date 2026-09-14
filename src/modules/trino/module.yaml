@@ -1,0 +1,87 @@
+# Trino — the query/exploration engine (ARCHITECTURE.md §11 Phase 3), wired to a real Iceberg
+# catalog backed by this cluster's own Postgres (JDBC catalog) and SeaweedFS (S3 storage) — not
+# just a bare pod with nothing to query. Added feature/module-external-chart (2026-09-14) as the
+# first real consumer of the externalChart module mechanism (see platform_cli/manifest.py's own
+# docstring for why that mechanism exists) — Trino ships an official upstream Helm chart
+# (trinodb/charts) that would be unrealistic to reimplement by hand, so this module.yaml has no
+# accompanying src/charts/trino/ directory at all — see src/modules/README.md's own section on
+# external-chart modules for the general shape this follows.
+#
+# JupyterHub (the other half of Phase 3 in ARCHITECTURE.md) is deliberately NOT here — it needs
+# real Keycloak OAuthenticator SSO work that deserves its own focused pass, not to be bolted onto
+# this change.
+id: trino
+displayName: Trino
+icon: puzzle   # no dedicated glyph exists yet (src/core/ui-shell/src/modules/icons.tsx) — falls
+               # back to the generic outline glyph; add a real one there if this earns it later
+navPath: /trino
+# The coordinator's own Kubernetes Service is "trino-coordinator" (not just "trino") — that's the
+# chart's own naming convention for a release named "trino" (platform-cli's `module install` uses
+# the module's id as the Helm release name). Confirmed against trinodb/charts' own published
+# "Monitoring & Observability" docs (its ServiceMonitor config names the Service explicitly), not
+# guessed — but NOT hand-verified with a live `helm template` (no helm binary was available in the
+# sandbox this was researched in). Re-confirm with `kubectl get svc -n trino` the first time this
+# actually installs against a real cluster, per this plan's own live-verification steps.
+# service.port defaults to 8080 in the chart and is left at that default (see values: below — no
+# service.port override).
+proxyTo: http://trino-coordinator.trino.svc:8080
+# /v1/info is the same HTTP path the chart's own coordinator livenessProbe already uses (returns
+# coordinator identity/version JSON, 200 when up) — reused here rather than inventing a new one.
+healthCheck: /v1/info
+requires: []
+optional: true
+namespace: trino
+placement:
+  # Same compute-role placement hello-module already uses (ARCHITECTURE.md §7) — a query engine
+  # belongs on compute nodes, not control/storage.
+  role: compute
+  tolerations:
+    - key: platform.io/role
+      operator: Equal
+      value: compute
+      effect: NoSchedule
+externalChart:
+  repoURL: https://trinodb.github.io/charts
+  chart: trino
+  version: "1.42.2"   # appVersion 480 — pinned 2026-09-14 from https://trinodb.github.io/charts/charts/trino/;
+                       # check for a newer release before a real install, same convention already
+                       # used by seaweedfs.yaml/reflector.yaml's own pinned versions.
+values:
+  # catalogs: is the chart's own top-level mechanism for Trino catalog properties (one entry per
+  # catalog, raw Trino .properties text — see charts/trino/values.yaml's own `catalogs:` key).
+  # ${ENV:VAR} is Trino's own native secrets substitution (trino.io docs, "Secrets"), independent
+  # of this Helm chart entirely — it's what keeps the real DB password and S3 keys out of git,
+  # matching this repo's SealedSecrets-everywhere discipline even though this is a module, not a
+  # core app.
+  catalogs:
+    iceberg: |
+      connector.name=iceberg
+      iceberg.catalog.type=jdbc
+      iceberg.jdbc-catalog.connection-url=jdbc:postgresql://platform-postgres-rw.postgres.svc:5432/trino_catalog
+      iceberg.jdbc-catalog.connection-user=trino
+      iceberg.jdbc-catalog.connection-password=${ENV:TRINO_DB_PASSWORD}
+      fs.native-s3.enabled=true
+      s3.endpoint=http://storage-seaweedfs-s3.storage-seaweedfs.svc:8333
+      s3.path-style-access=true
+      s3.aws-access-key=${ENV:TRINO_S3_ACCESS_KEY}
+      s3.aws-secret-key=${ENV:TRINO_S3_SECRET_KEY}
+  # env: is the chart's own top-level field (charts/trino/values.yaml), applied to every pod it
+  # creates (coordinator + worker) — used here instead of envFrom so each Secret key lands under
+  # the exact env-var name the catalogs: block above expects, rather than whatever key name the
+  # Secret itself happens to use.
+  env:
+    - name: TRINO_DB_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: platform-postgres-trino-credentials   # bootstrap/install.sh's new step — see trino-database.yaml
+          key: password   # basic-auth secret, same shape as platform-postgres-catalog-credentials
+    - name: TRINO_S3_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: platform-s3-credentials   # already created+reflected by install.sh's existing 2e step —
+          key: ACCESS_KEY_ID              # its reflection-auto-namespaces list needs `trino` added too
+    - name: TRINO_S3_SECRET_KEY
+      valueFrom:
+        secretKeyRef:
+          name: platform-s3-credentials
+          key: ACCESS_SECRET_KEY

@@ -42,6 +42,24 @@ same "turn a module.yaml into a running module" conversion `platform module inst
    in-cluster Service to forward a module's own UI traffic to. Same `json.dumps()` convention as the
    other three annotations, even though `proxyTo` is a plain internal URL unlikely to need escaping —
    consistency with its neighbors is worth more than the one saved line.
+
+   2026-09-14 (feature/module-external-chart branch, ARCHITECTURE.md §11 Phase 3 kickoff): a module's
+   chart no longer has to live in this repo. `ModuleManifest.externalChart` (new, optional) lets
+   `module.yaml` point straight at a chart's own upstream Helm repo instead — the same shape
+   `apps/optional/storage-seaweedfs/seaweedfs.yaml` already uses by hand (`repoURL`/`chart`/
+   `targetRevision`), now reachable through the module system for the first time. `None` (the
+   default) is every module written before this branch, completely unchanged: `hello-module` and
+   `_template` both still resolve to a local `src/charts/<id>/` chart the way they always have.
+   Picked over vendoring the upstream chart as a Helm dependency (a real alternative, discussed and
+   rejected with the repo owner) because Phase 5/6 already know they'll need to wrap several more
+   third-party charts (Spark operator, Dask, Superset, MLflow) — worth building and fully testing
+   this once now rather than a narrower fix per module, and it avoids committing binary `.tgz`
+   vendored charts to git. `ModuleManifest.values` (also new) is the other half of the same change:
+   an external-chart module has no local `values.yaml` layer of its own to carry its real
+   configuration the way a local chart's does, so `module.yaml` needs somewhere to put it directly.
+   Defaults to `{}` for every existing module, so nothing already written changes shape. See
+   `src/modules/trino/module.yaml` for the first real module built this way, and
+   `docs/architecture/module-lifecycle-plan.md`'s matching entry for the full design writeup.
 """
 from __future__ import annotations
 
@@ -81,11 +99,25 @@ class Placement(BaseModel):
     tolerations: list[Toleration] = Field(default_factory=list)
 
 
+class ExternalChart(BaseModel):
+    """A module's chart isn't in this repo at all — it lives in the chart's own upstream Helm repo
+    (this module's own docstring, 2026-09-14). Mirrors exactly what
+    `apps/optional/storage-seaweedfs/seaweedfs.yaml` already writes by hand into an `Application`'s
+    `spec.source`; this is just that same three-field shape, now reachable from `module.yaml`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repoURL: str
+    chart: str
+    version: str
+
+
 class ModuleManifest(BaseModel):
     """The `module.yaml` schema. Field set matches ARCHITECTURE.md §3's
     `modules/notebook-jupyterhub/module.yaml` example exactly, plus `namespace` (see this module's
-    docstring) and `placement` (§7). `extra="forbid"` means an unknown field in module.yaml is a
-    validation error, not a silently-ignored typo."""
+    docstring), `placement` (§7), and `externalChart`/`values` (2026-09-14, see this module's
+    docstring). `extra="forbid"` means an unknown field in module.yaml is a validation error, not a
+    silently-ignored typo."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -110,6 +142,18 @@ class ModuleManifest(BaseModel):
     optional: bool = True
     namespace: str | None = None
     placement: Placement | None = None
+    # 2026-09-14 (feature/module-external-chart) — None (the default) is every module written
+    # before this branch: its chart lives at src/charts/<id>/ in this repo, exactly as before.
+    # Set, it points render_application_manifest() at this chart's own upstream Helm repo instead —
+    # see this module's own docstring and ExternalChart's.
+    externalChart: ExternalChart | None = None
+    # Free-form extra Helm values, merged alongside `placement` into the generated Application's
+    # `spec.source.helm.values` block. Every module gets this for free, not just external-chart
+    # ones — but a LOCAL chart's real configuration normally lives in its own
+    # src/charts/<id>/values.yaml, so this stays {} for hello-module/_template and every module
+    # like them. An EXTERNAL-chart module has no such file of its own, so this is where its real
+    # configuration (e.g. Trino's `catalogs:`) has to live instead.
+    values: dict = Field(default_factory=dict)
 
     @property
     def resolved_namespace(self) -> str:
@@ -135,38 +179,77 @@ def load_module_manifest(path: Path) -> ModuleManifest:
         raise ManifestError(f"{path} failed validation:\n{exc}") from exc
 
 
-def _placement_values_block(manifest: ModuleManifest) -> str:
-    """The `spec.source.helm.values` YAML text (decision 3: computed from module.yaml's own
-    `placement`, empty when the module declares none — the chart's _helpers.tpl then renders no
-    affinity/tolerations at all)."""
-    if manifest.placement is None:
-        return "placement: {}\n"
-    lines = ["placement:", f"  role: {manifest.placement.role}"]
-    if manifest.placement.tolerations:
-        lines.append("  tolerations:")
-        for t in manifest.placement.tolerations:
-            lines.append(f"    - key: {t.key}")
-            lines.append(f"      operator: {t.operator}")
-            if t.value is not None:
-                lines.append(f"      value: {t.value}")
-            lines.append(f"      effect: {t.effect}")
-    else:
-        lines.append("  tolerations: []")
-    return "\n".join(lines) + "\n"
+def _values_block(manifest: ModuleManifest) -> str:
+    """The `spec.source.helm.values` YAML text: `placement` (decision 3, module-lifecycle-plan.md —
+    empty when the module declares none, so the chart's _helpers.tpl renders no affinity/tolerations
+    at all) merged with any free-form `manifest.values` (2026-09-14, this module's own docstring)
+    into one document. `sort_keys=False` preserves each dict's own field order (e.g. a Toleration's
+    key/operator/value/effect) rather than alphabetizing it — matches this function's pre-2026-09-14
+    hand-rolled output, which existing tests already assert against."""
+    placement: dict = {}
+    if manifest.placement is not None:
+        placement = {"role": manifest.placement.role}
+        placement["tolerations"] = [
+            {
+                key: value
+                for key, value in (
+                    ("key", t.key),
+                    ("operator", t.operator),
+                    ("value", t.value),
+                    ("effect", t.effect),
+                )
+                if value is not None
+            }
+            for t in manifest.placement.tolerations
+        ]
+    combined = {"placement": placement, **manifest.values}
+    return yaml.safe_dump(combined, sort_keys=False)
 
 
-def render_application_manifest(manifest: ModuleManifest, *, repo_url: str, chart_path: str) -> str:
+def render_application_manifest(
+    manifest: ModuleManifest, *, repo_url: str, chart_path: str | None
+) -> str:
     """Renders the complete Argo CD `Application` YAML `platform module install` writes to
     `src/modules-enabled/<id>.yaml`. `repo_url` comes from `repo.discover_repo_url()` (git remote
     get-url origin) — the one place this improves on the hand-authored "self-referencing apps"
     convention (argocd/README.md), which hardcodes repoURL with a "forkers: edit this" comment;
     generated content doesn't need that caveat, it can just ask git. `targetRevision` still
-    hardcodes `dev`, matching every other self-referencing Application in this repo."""
+    hardcodes `dev` for a LOCAL chart, matching every other self-referencing Application in this repo.
+
+    2026-09-14 (feature/module-external-chart): `chart_path` is now `None` for a module whose
+    `manifest.externalChart` is set — see this module's own docstring. In that case `repo_url` is
+    still accepted (module.py's install() always discovers/overrides it) but simply unused here; the
+    `spec.source` block points at `externalChart`'s own repo instead, the same shape
+    `apps/optional/storage-seaweedfs/seaweedfs.yaml` already writes by hand. Whether `chart_path` is
+    `None` is entirely the caller's call — install()'s own local-chart-directory check (module.py)
+    decides which shape a given module actually gets; this function just renders whichever one it's
+    told."""
     generated_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    values_block = _placement_values_block(manifest)
+    values_block = _values_block(manifest)
     indented_values = "\n".join(
         f"        {line}" if line else "" for line in values_block.splitlines()
     )
+    if manifest.externalChart is not None:
+        source_block = f"""    repoURL: {manifest.externalChart.repoURL}
+    chart: {manifest.externalChart.chart}
+    targetRevision: {manifest.externalChart.version}
+    helm:
+      values: |
+{indented_values}"""
+        chart_comment = (
+            f"# Chart: {manifest.externalChart.chart} {manifest.externalChart.version} from "
+            f"{manifest.externalChart.repoURL} (not this repo — see module.yaml's own externalChart)."
+        )
+    else:
+        source_block = f"""    repoURL: {repo_url}
+    targetRevision: dev
+    path: {chart_path}
+    helm:
+      values: |
+{indented_values}"""
+        chart_comment = (
+            f"# see src/charts/{manifest.id}/templates/*.yaml for this module's own PVCs, if it has any."
+        )
     return f"""\
 # GENERATED by `platform module install {manifest.id}` at {generated_at} — do not hand-edit.
 # Source descriptor: src/modules/{manifest.id}/module.yaml. To change this module's placement,
@@ -179,7 +262,7 @@ def render_application_manifest(manifest: ModuleManifest, *, repo_url: str, char
 # finalizer below mean `platform module uninstall {manifest.id}` (which just deletes this file)
 # is enough to tear the whole module back down — except any PersistentVolumeClaim the chart marks
 # `argocd.argoproj.io/sync-options: Delete=false`, which survives on purpose (ARCHITECTURE.md §3;
-# see src/charts/{manifest.id}/templates/*.yaml for this module's own PVCs, if it has any).
+{chart_comment}
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -197,12 +280,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: {repo_url}
-    targetRevision: dev
-    path: {chart_path}
-    helm:
-      values: |
-{indented_values}
+{source_block}
   destination:
     server: https://kubernetes.default.svc
     namespace: {manifest.resolved_namespace}

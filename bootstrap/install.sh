@@ -341,6 +341,17 @@ if [[ "$SKIP_SEAWEEDFS" == true ]]; then
       --from-literal=ACCESS_KEY_ID="${S3_ACCESS_KEY_ID}" \
       --from-literal=ACCESS_SECRET_KEY="${S3_SECRET_ACCESS_KEY}" \
       --from-literal=REGION="${S3_REGION}"
+    # Mirror into trino — added 2026-09-14, Phase 3 kickoff: src/modules/trino/module.yaml's
+    # Iceberg catalog reads its S3 access/secret key out of this Secret via env:/secretKeyRef, and
+    # a module's own namespace (trino) is never postgres, so it needs the same cross-namespace
+    # Reflector treatment 2f already gives platform-postgres-*-credentials Secrets. Unlike the
+    # in-cluster branch below, this Secret already lives where it needs to (postgres doesn't
+    # itself consume it) — the only new destination is trino.
+    kubectl -n postgres annotate secret platform-s3-credentials \
+      reflector.v1.k8s.emberstack.com/reflection-allowed=true \
+      reflector.v1.k8s.emberstack.com/reflection-auto-enabled=true \
+      reflector.v1.k8s.emberstack.com/reflection-auto-namespaces=trino \
+      --overwrite
     success "platform-s3-credentials created (external endpoint)."
   fi
   warn "manifests/postgres-backup.yaml's ObjectStore ships with SeaweedFS's in-cluster endpointURL committed as the default — update it to ${S3_ENDPOINT} by hand (see that file's own TODO) before backups will actually reach your external endpoint."
@@ -361,11 +372,14 @@ else
     unset S3_SECRET_KEY
     # Mirror into postgres — CNPG's ObjectStore and the bucket-creation Job
     # (both in manifests/postgres-backup.yaml) need it there too. Same
-    # Reflector mechanism as 2d.
+    # Reflector mechanism as 2d. `,trino` added 2026-09-14, Phase 3 kickoff:
+    # src/modules/trino/module.yaml's Iceberg catalog reads its S3
+    # access/secret key out of this same Secret via env:/secretKeyRef, in its
+    # own `trino` namespace.
     kubectl -n storage-seaweedfs annotate secret platform-s3-credentials \
       reflector.v1.k8s.emberstack.com/reflection-allowed=true \
       reflector.v1.k8s.emberstack.com/reflection-auto-enabled=true \
-      reflector.v1.k8s.emberstack.com/reflection-auto-namespaces=postgres \
+      reflector.v1.k8s.emberstack.com/reflection-auto-namespaces=postgres,trino \
       --overwrite
     success "platform-s3-credentials created (in-cluster SeaweedFS)."
   fi
@@ -401,6 +415,39 @@ else
     reflector.v1.k8s.emberstack.com/reflection-auto-namespaces=catalog-service \
     --overwrite
   success "platform-postgres-catalog-credentials created."
+fi
+
+# ---- 2g. Postgres→Trino DB credential (cross-namespace via Reflector) ---
+#          same exact pattern as 2f, added 2026-09-14 for Phase 3's Trino
+#          module (feature/module-external-chart).
+# platform-postgres-trino-credentials is what postgres-cluster.yaml's
+# managed.roles reconciles the `trino` role's password from, and what
+# src/modules/trino/module.yaml's `env:` block reads TRINO_DB_PASSWORD out
+# of once `platform module install trino` actually runs (that install is a
+# separate, later operator action — Reflector just waits for the `trino`
+# namespace to exist in the meantime, same as 2d's note about catalog-service
+# not existing yet). Idempotent, same as 2f — never rotates an existing
+# credential.
+info "Ensuring the Postgres→Trino credential secret exists..."
+if kubectl -n postgres get secret platform-postgres-trino-credentials >/dev/null 2>&1; then
+  info "platform-postgres-trino-credentials already exists — leaving it as-is."
+else
+  if command -v openssl >/dev/null 2>&1; then
+    TRINO_DB_PASSWORD="$(openssl rand -base64 24)"
+  else
+    TRINO_DB_PASSWORD="$(head -c 24 /dev/urandom | base64)"
+  fi
+  kubectl -n postgres create secret generic platform-postgres-trino-credentials \
+    --type=kubernetes.io/basic-auth \
+    --from-literal=username=trino \
+    --from-literal=password="${TRINO_DB_PASSWORD}"
+  unset TRINO_DB_PASSWORD
+  kubectl -n postgres annotate secret platform-postgres-trino-credentials \
+    reflector.v1.k8s.emberstack.com/reflection-allowed=true \
+    reflector.v1.k8s.emberstack.com/reflection-auto-enabled=true \
+    reflector.v1.k8s.emberstack.com/reflection-auto-namespaces=trino \
+    --overwrite
+  success "platform-postgres-trino-credentials created."
 fi
 
 # ---- 3. Hand Argo CD the core app-of-apps -------------------------------

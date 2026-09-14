@@ -106,6 +106,43 @@ Each item names the ARCHITECTURE.md section that already specifies its design, w
    index, a git-push-credentials trust-boundary question, reverse-proxying into module UIs),
    not one bullet's worth of work, the same discovery that split items 6/7 apart in the first place.
 
+8. **Wrapping a third-party Helm chart** (ARCHITECTURE.md §11, Phase 3 kickoff). Everything above
+   assumed `module.yaml` points at a chart hand-authored in `src/charts/<id>/` — fine for
+   `hello-module`, unrealistic for something like Trino, which ships its own official upstream chart
+   (`trinodb/charts`). Reimplementing that by hand, or vendoring it as a binary `.tgz` dependency,
+   were both rejected in favor of extending the module system itself, since Phase 5/6 (Spark, Dask,
+   Superset, MLflow) will need this same capability again soon. ✅ **Built** (feature/module-external-
+   chart, 2026-09-14) — `ModuleManifest` gained an optional `externalChart: {repoURL, chart,
+   version}` and a free-form `values: {}` (`platform_cli/manifest.py`); when set,
+   `render_application_manifest()` points the generated Application's `spec.source` straight at that
+   chart repo (the same shape `apps/optional/storage-seaweedfs/seaweedfs.yaml` already used by hand)
+   instead of `path: src/charts/<id>`, and `module.py`'s `install()` skips the "chart directory must
+   exist" check entirely for these — a module can't set `externalChart` AND have a local chart
+   directory (ambiguous, refused outright). `scaffold` deliberately stays local-chart-only; see
+   `src/modules/README.md`'s own "Wrapping a third-party Helm chart" section for the `module.yaml`
+   shape. `src/modules/trino/module.yaml` is the first real consumer — see item 9.
+
+9. **Trino, wired to a real Iceberg catalog** (ARCHITECTURE.md §11, Phase 3 — query/exploration).
+   ✅ **Built** (feature/module-external-chart, 2026-09-14) — `src/modules/trino/module.yaml`
+   (`externalChart` pointed at `trinodb/charts`, no `src/charts/trino/` directory), a new `trino`
+   role in `postgres-cluster.yaml`'s `managed.roles` and a `trino-database.yaml` Database CR (exact
+   mirrors of the `catalog`/`catalog-database.yaml` pair Phase 2 already established), and a new
+   `bootstrap/install.sh` step generating `platform-postgres-trino-credentials` — reflected into the
+   `trino` namespace the same way `platform-postgres-catalog-credentials` reflects into
+   `catalog-service`. `platform-s3-credentials`'s existing Reflector annotations (both the in-cluster
+   and `--skip-seaweedfs` branches) were extended to also reach `trino`, so the Iceberg catalog's S3
+   access/secret keys land there too. Trino's own `catalogs.iceberg` properties use Trino's native
+   `${ENV:VAR}` substitution against those two Secrets (via `env:`/`secretKeyRef` in `module.yaml`'s
+   `values:` block) — no plaintext credential in git, same discipline as every SealedSecret
+   elsewhere in this repo. JupyterHub (the other half of Phase 3) is deliberately not part of this —
+   it needs its own Keycloak OAuthenticator SSO work. **Not yet live-verified against a real
+   cluster** — see this repo's own verification conventions (e.g. `sealed-secrets.yaml`'s "confirm
+   before committing" precedent) for why that matters: the coordinator Service name/port and the
+   chart's `env`/`envFrom` field names were confirmed against `trinodb/charts`' own published docs,
+   not a live `helm template` run (no `helm` binary was available where this was written), so treat
+   them as researched, not hands-on-proven, until `platform module install trino` actually succeeds
+   against `homelab-dev`.
+
 ## Recommended first slice
 
 Not "build the whole system" — a concrete, buildable starting point for whoever picks this up next,

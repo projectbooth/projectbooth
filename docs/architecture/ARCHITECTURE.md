@@ -321,6 +321,8 @@ Each phase is usable on its own — you're not blocked on finishing the whole th
 
 **Do this on day one, not later:** export the secrets-encryption key to offsite storage the moment it's generated in Phase 0. Every other piece of state in §8 can be restored from backups; that key can't be regenerated, and losing it makes every other backup unreadable ciphertext. `bootstrap/export-sealed-secrets-key.sh` (§8's table, above) automates this, including catching future key rotations — still worth running it once by hand right after first install rather than waiting for its own timer's first scheduled fire, per its own name: day one, not later. Confirmed live 2026-09-14: the timer itself (not just that first manual run) has now fired automatically three days running, each producing a fresh, correctly-permissioned export — the mechanism is proven, not just installed.
 
+**Phase 3 kicked off, 2026-09-14** (feature/module-external-chart): Trino's half is built — `src/modules/trino/module.yaml`, wired to a real Iceberg catalog (Postgres JDBC + SeaweedFS S3), plus the general external-chart module mechanism it's the first real consumer of (`docs/architecture/module-lifecycle-plan.md` items 8-9 have the full writeup). Not yet live-verified against a real cluster — see that doc's own note on what was researched vs. hands-on-confirmed. JupyterHub, the other half of this phase, is deliberately not started yet: it needs its own Keycloak OAuthenticator SSO work.
+
 ---
 
 ## 12. Open calls
