@@ -162,15 +162,18 @@ jobs:
       contents: write
       packages: write
     env:
-      # Hardcoded lowercase — ${{ github.repository_owner }} would resolve
-      # to "DougallPercival" (this repo's real GitHub casing, see every
-      # repoURL: elsewhere in src/core/argocd/), and GHCR/OCI image
-      # references MUST be all-lowercase or the push is rejected outright.
-      # Same "hardcoded, not derived — see the comment for where a fork
+      # Hardcoded, not derived from ${{ github.repository_owner }} — same
+      # "hardcoded, not derived — see the comment for where a fork
       # personalizes it" pattern as repoURL/targetRevision in every self-
-      # referencing Argo CD Application (src/core/argocd/README.md) — if
-      # you fork this repo and want your own images, this is the other
-      # value you change, alongside repoURL.
+      # referencing Argo CD Application (src/core/argocd/README.md). Two
+      # reasons to keep it hardcoded even though "projectbooth" (the org
+      # this lives under as of 2026-09-14 — previously a personal account,
+      # "dougallpercival") happens to already be lowercase: GHCR/OCI image
+      # references MUST be all-lowercase or the push is rejected outright,
+      # and a future owner-casing change would silently break a dynamic
+      # expression here with no lowercase guard of its own. If you fork
+      # this repo and want your own images, this is the other value you
+      # change, alongside repoURL.
       IMAGE_NAME: ghcr.io/projectbooth/catalog-service
     steps:
       # fetch-depth: 0 (full history, not the default shallow depth-1) — the "Record this build's
