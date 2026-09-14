@@ -49,6 +49,13 @@
 # CREATE-DATABASE Job, since bootstrap.initdb only ever runs once per
 # Cluster and this operator (1.30) has had declarative Database support
 # since 1.24.
+#
+# `trino` entry (added 2026-09-14, Phase 3 kickoff — feature/module-external-chart) is the exact
+# same pattern again: password reconciled from platform-postgres-trino-credentials (bootstrap/
+# install.sh's new step), mirrored into the `trino` namespace by Reflector. This is Trino's own
+# Iceberg JDBC catalog role — see src/modules/trino/module.yaml's `catalogs.iceberg` values block
+# for where the resulting DB URL/user/password actually get used, and trino-database.yaml for the
+# database itself.
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
@@ -75,6 +82,11 @@ spec:
         login: true
         passwordSecret:
           name: platform-postgres-catalog-credentials
+      - name: trino
+        ensure: present
+        login: true
+        passwordSecret:
+          name: platform-postgres-trino-credentials
   # Continuous WAL archiving to the ObjectStore in postgres-backup.yaml — the
   # plugin itself (postgres-backup-plugin.yaml) has to be running for this to
   # actually work, but the Cluster tolerates it not being ready yet the same

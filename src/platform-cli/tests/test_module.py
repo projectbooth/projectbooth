@@ -460,3 +460,161 @@ def test_uninstall_unknown_module_fails_clearly(git_repo):
     result = runner.invoke(app, ["uninstall", "hello"])
     assert result.exit_code == 1
     assert "isn't installed" in result.output
+
+
+# --- install: externalChart (feature/module-external-chart, 2026-09-14, ARCHITECTURE.md §11 -----
+# Phase 3) — a module's chart pointing at its own upstream Helm repo instead of a local
+# src/charts/<id>/ directory. See manifest.py's own module docstring for the full design. `scaffold`
+# deliberately doesn't generate this shape (module.py's own docstring on that command) — these
+# tests hand-write module.yaml directly, the same way a real operator authoring one would.
+
+
+def _write_external_module_yaml(repo_root: Path, name: str, **overrides) -> None:
+    (repo_root / "src/modules" / name).mkdir(parents=True)
+    fields = {
+        "displayName": name.title(),
+        "navPath": f"/{name}",
+        "proxyTo": f"http://{name}.{name}.svc:8080",
+        "externalChart_repoURL": "https://example.invalid/charts",
+        "externalChart_chart": "thing",
+        "externalChart_version": "1.0.0",
+    }
+    fields.update(overrides)
+    (repo_root / f"src/modules/{name}/module.yaml").write_text(
+        f"""\
+id: {name}
+displayName: {fields["displayName"]}
+navPath: {fields["navPath"]}
+proxyTo: {fields["proxyTo"]}
+externalChart:
+  repoURL: {fields["externalChart_repoURL"]}
+  chart: {fields["externalChart_chart"]}
+  version: "{fields["externalChart_version"]}"
+"""
+    )
+
+
+def test_install_external_chart_module_needs_no_local_chart_directory(git_repo, monkeypatch):
+    repo_root, _ = git_repo
+    _write_external_module_yaml(repo_root, "trino")
+    _commit_all(repo_root, "add trino module descriptor")
+    assert not (repo_root / "src/charts/trino").exists()
+    # This test is about the local-chart-directory requirement, not the helm-template safety
+    # check (that's test_install_external_chart_helm_check_uses_repo_version_flags and friends,
+    # below) — force the "helm not on PATH" skip path so this doesn't depend on whether the
+    # environment running it happens to have a real `helm` binary (it does on CI, which made this
+    # test try to actually resolve the fake `example.invalid` repo and fail on DNS).
+    monkeypatch.setattr("platform_cli.module.shutil.which", lambda _: None)
+
+    result = runner.invoke(app, ["install", "trino", "--skip-requires-check"])
+    assert result.exit_code == 0, result.output
+    assert (repo_root / "src/modules-enabled/trino.yaml").is_file()
+
+
+def test_install_external_chart_renders_repo_chart_version_not_local_path(git_repo, monkeypatch):
+    repo_root, _ = git_repo
+    _write_external_module_yaml(
+        repo_root,
+        "trino",
+        externalChart_repoURL="https://trinodb.github.io/charts",
+        externalChart_chart="trino",
+        externalChart_version="1.42.2",
+    )
+    _commit_all(repo_root, "add trino module descriptor")
+    # Same reasoning as the test above — this is about the rendered Application's shape, not
+    # about actually reaching trinodb.github.io over the network during a test run.
+    monkeypatch.setattr("platform_cli.module.shutil.which", lambda _: None)
+
+    result = runner.invoke(app, ["install", "trino", "--skip-requires-check"])
+    assert result.exit_code == 0, result.output
+    content = (repo_root / "src/modules-enabled/trino.yaml").read_text()
+    assert "repoURL: https://trinodb.github.io/charts" in content
+    assert "chart: trino" in content
+    assert "targetRevision: 1.42.2" in content
+    assert "path: src/charts/trino" not in content
+
+
+def test_install_refuses_when_both_external_chart_and_local_chart_directory_exist(git_repo, monkeypatch):
+    repo_root, _ = git_repo
+    _write_external_module_yaml(repo_root, "trino")
+    (repo_root / "src/charts/trino").mkdir(parents=True)
+    (repo_root / "src/charts/trino/Chart.yaml").write_text("apiVersion: v2\nname: trino\nversion: 0.1.0\n")
+    _commit_all(repo_root, "add trino module descriptor with a stray local chart too")
+    # The ambiguous-sources guard fires before any helm check would even run, but pin this down
+    # the same way as its neighbors above rather than leave it the odd one out relying on
+    # ordering that isn't asserted anywhere.
+    monkeypatch.setattr("platform_cli.module.shutil.which", lambda _: None)
+
+    result = runner.invoke(app, ["install", "trino", "--skip-requires-check"])
+    assert result.exit_code == 1
+    assert "ambiguous" in result.output
+    assert not (repo_root / "src/modules-enabled/trino.yaml").exists()
+
+
+def test_install_external_chart_helm_check_uses_repo_version_flags(git_repo, monkeypatch):
+    repo_root, _ = git_repo
+    _write_external_module_yaml(
+        repo_root,
+        "trino",
+        externalChart_repoURL="https://trinodb.github.io/charts",
+        externalChart_chart="trino",
+        externalChart_version="1.42.2",
+    )
+    _commit_all(repo_root, "add trino module descriptor")
+    monkeypatch.setattr("platform_cli.module.shutil.which", lambda _: "/usr/bin/helm")
+
+    real_run = subprocess.run
+    calls = []
+
+    def fake_run(args, **kwargs):
+        if args[0] != "/usr/bin/helm":
+            return real_run(args, **kwargs)
+        calls.append(args)
+        return subprocess.CompletedProcess(args, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("platform_cli.module.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["install", "trino", "--skip-requires-check"])
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    invocation = calls[0]
+    assert invocation[:3] == ["/usr/bin/helm", "template", "trino"]
+    assert "trino" in invocation  # the chart name itself, not a local directory path
+    assert "--repo" in invocation
+    assert invocation[invocation.index("--repo") + 1] == "https://trinodb.github.io/charts"
+    assert "--version" in invocation
+    assert invocation[invocation.index("--version") + 1] == "1.42.2"
+    assert not any(str(repo_root) in str(a) for a in invocation)  # no local chart_dir path anywhere
+
+
+def test_install_external_chart_skips_helm_check_when_helm_not_on_path(git_repo, monkeypatch):
+    repo_root, _ = git_repo
+    _write_external_module_yaml(repo_root, "trino")
+    _commit_all(repo_root, "add trino module descriptor")
+    monkeypatch.setattr("platform_cli.module.shutil.which", lambda _: None)
+
+    result = runner.invoke(app, ["install", "trino", "--skip-requires-check"])
+    assert result.exit_code == 0, result.output
+    assert "helm` not found on PATH" in result.output
+
+
+def test_install_external_chart_aborts_on_helm_template_failure(git_repo, monkeypatch):
+    repo_root, _ = git_repo
+    _write_external_module_yaml(repo_root, "trino")
+    _commit_all(repo_root, "add trino module descriptor")
+    monkeypatch.setattr("platform_cli.module.shutil.which", lambda _: "/usr/bin/helm")
+
+    real_run = subprocess.run
+
+    def fake_run(args, **kwargs):
+        if args[0] != "/usr/bin/helm":
+            return real_run(args, **kwargs)
+        return subprocess.CompletedProcess(args, returncode=1, stdout="", stderr="boom: no such chart")
+
+    monkeypatch.setattr("platform_cli.module.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["install", "trino", "--skip-requires-check"])
+    assert result.exit_code == 1
+    assert "helm template" in result.output
+    assert "boom: no such chart" in result.output
+    assert not (repo_root / "src/modules-enabled/trino.yaml").exists()

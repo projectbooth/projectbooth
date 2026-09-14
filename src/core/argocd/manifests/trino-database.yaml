@@ -1,0 +1,21 @@
+# Trino's own Iceberg JDBC catalog database (src/modules/trino/module.yaml's `catalogs.iceberg`
+# block points at it) — owned by the `trino` role declared in postgres-cluster.yaml's
+# managed.roles. Exact mirror of catalog-database.yaml (added 2026-09-14, Phase 3 kickoff,
+# feature/module-external-chart) — see that file's own comments for why CNPG's declarative
+# Database CRD is used here instead of a hand-rolled CREATE-DATABASE Job.
+#
+# databaseReclaimPolicy: retain (not delete) — same reasoning as catalog-database.yaml: deleting
+# this CR (e.g. by mistake, or while iterating on the module) must NOT drop the database and
+# whatever Iceberg table metadata has accumulated in it.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: trino-database
+  namespace: postgres
+spec:
+  name: trino_catalog
+  owner: trino
+  cluster:
+    name: platform-postgres
+  ensure: present
+  databaseReclaimPolicy: retain

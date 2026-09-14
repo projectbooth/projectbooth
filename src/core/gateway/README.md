@@ -78,8 +78,10 @@ workspace-optional variant — following the precedent that endpoint's own docst
 this exact situation (module `Application`s aren't workspace-scoped resources, but scoping this by
 workspace membership anyway doesn't leak anything an authenticated user couldn't already infer).
 
-`proxyTo` is still not propagated anywhere — that stays item 8's own future pass over
-`render_application_manifest()`, deliberately untouched here.
+`proxyTo` was still not propagated anywhere as of this branch — that was item 8's own future pass
+over `render_application_manifest()`, deliberately untouched here. Done now (2026-09-10/11): see the
+"Reverse-proxying into a module's own UI" section below — `proxyTo` goes out as `platform.io/proxy-to`,
+the same `json.dumps()`-guarded way as the other three fields above.
 
 ## Add-ons page's static module catalog (2026-09-09, feature/gateway-module-catalog branch)
 
