@@ -494,18 +494,24 @@ externalChart:
     )
 
 
-def test_install_external_chart_module_needs_no_local_chart_directory(git_repo):
+def test_install_external_chart_module_needs_no_local_chart_directory(git_repo, monkeypatch):
     repo_root, _ = git_repo
     _write_external_module_yaml(repo_root, "trino")
     _commit_all(repo_root, "add trino module descriptor")
     assert not (repo_root / "src/charts/trino").exists()
+    # This test is about the local-chart-directory requirement, not the helm-template safety
+    # check (that's test_install_external_chart_helm_check_uses_repo_version_flags and friends,
+    # below) — force the "helm not on PATH" skip path so this doesn't depend on whether the
+    # environment running it happens to have a real `helm` binary (it does on CI, which made this
+    # test try to actually resolve the fake `example.invalid` repo and fail on DNS).
+    monkeypatch.setattr("platform_cli.module.shutil.which", lambda _: None)
 
     result = runner.invoke(app, ["install", "trino", "--skip-requires-check"])
     assert result.exit_code == 0, result.output
     assert (repo_root / "src/modules-enabled/trino.yaml").is_file()
 
 
-def test_install_external_chart_renders_repo_chart_version_not_local_path(git_repo):
+def test_install_external_chart_renders_repo_chart_version_not_local_path(git_repo, monkeypatch):
     repo_root, _ = git_repo
     _write_external_module_yaml(
         repo_root,
@@ -515,6 +521,9 @@ def test_install_external_chart_renders_repo_chart_version_not_local_path(git_re
         externalChart_version="1.42.2",
     )
     _commit_all(repo_root, "add trino module descriptor")
+    # Same reasoning as the test above — this is about the rendered Application's shape, not
+    # about actually reaching trinodb.github.io over the network during a test run.
+    monkeypatch.setattr("platform_cli.module.shutil.which", lambda _: None)
 
     result = runner.invoke(app, ["install", "trino", "--skip-requires-check"])
     assert result.exit_code == 0, result.output
@@ -525,12 +534,16 @@ def test_install_external_chart_renders_repo_chart_version_not_local_path(git_re
     assert "path: src/charts/trino" not in content
 
 
-def test_install_refuses_when_both_external_chart_and_local_chart_directory_exist(git_repo):
+def test_install_refuses_when_both_external_chart_and_local_chart_directory_exist(git_repo, monkeypatch):
     repo_root, _ = git_repo
     _write_external_module_yaml(repo_root, "trino")
     (repo_root / "src/charts/trino").mkdir(parents=True)
     (repo_root / "src/charts/trino/Chart.yaml").write_text("apiVersion: v2\nname: trino\nversion: 0.1.0\n")
     _commit_all(repo_root, "add trino module descriptor with a stray local chart too")
+    # The ambiguous-sources guard fires before any helm check would even run, but pin this down
+    # the same way as its neighbors above rather than leave it the odd one out relying on
+    # ordering that isn't asserted anywhere.
+    monkeypatch.setattr("platform_cli.module.shutil.which", lambda _: None)
 
     result = runner.invoke(app, ["install", "trino", "--skip-requires-check"])
     assert result.exit_code == 1
