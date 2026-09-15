@@ -358,51 +358,68 @@ async def _proxy_module_request(module_id: str, path: str, request: Request):
     # ever see; every other query param passes through untouched.
     outbound_params = {k: v for k, v in request.query_params.multi_items() if k != "token"}
 
-    async with httpx.AsyncClient(base_url=target, timeout=settings.upstream_timeout_seconds) as client:
-        outbound_request = client.build_request(
-            request.method, f"/{path}", params=outbound_params, content=body, headers=outbound_headers
+    # 2026-09-15 (Trino live-verification): deliberately NOT `async with httpx.AsyncClient(...) as
+    # client:` — that was this function's ORIGINAL shape, and it's a real bug that just never
+    # surfaced before now: `async with` calls `client.__aexit__` (which closes the client, and every
+    # connection it holds, including the still-open one to `target`) the moment this function
+    # RETURNS — but `return response` below hands back a `StreamingResponse` whose body hasn't been
+    # read yet. The body only actually gets pulled through `stream_body()`'s `aiter_raw()` LATER,
+    # when Starlette's ASGI layer calls into the response after this function has already returned
+    # (and, with the old shape, already closed the connection out from under it). hello-module's tiny
+    # static page apparently always arrived in whatever initial chunk httpx buffers before `send()`
+    # returns, so `aiter_raw()` never needed a further network read and this went unnoticed — Trino's
+    # real, gzip-compressed `login.html` needed a genuine follow-up read, hit the already-closed
+    # connection, and failed with `httpx.ReadError` (confirmed live from gateway's own logs) — which
+    # the browser surfaced as `net::ERR_HTTP2_PROTOCOL_ERROR` (headers/200 already sent, then the
+    # stream died mid-transfer). Fix: keep the client alive for exactly as long as the body is being
+    # streamed, by closing it in `stream_body()`'s own `finally` — the same place the response itself
+    # already gets closed — instead of tying its lifetime to this function's own return.
+    client = httpx.AsyncClient(base_url=target, timeout=settings.upstream_timeout_seconds)
+    outbound_request = client.build_request(
+        request.method, f"/{path}", params=outbound_params, content=body, headers=outbound_headers
+    )
+    try:
+        upstream_response = await client.send(outbound_request, stream=True)
+    except httpx.TimeoutException:
+        await client.aclose()
+        return JSONResponse(
+            status_code=504, content={"detail": f"{module_id!r}'s own UI did not respond in time."}
         )
+    except httpx.ConnectError:
+        await client.aclose()
+        return JSONResponse(status_code=502, content={"detail": f"{module_id!r}'s own UI is unreachable."})
+
+    response_headers = _sanitize_frame_headers(
+        {
+            key: value
+            for key, value in upstream_response.headers.items()
+            if key.lower() not in _HOP_BY_HOP_HEADERS
+        }
+    )
+
+    if 300 <= upstream_response.status_code < 400:
+        for key in list(response_headers):
+            if key.lower() == "location":
+                response_headers[key] = _rewrite_redirect_location(
+                    response_headers[key], module_id, target, path
+                )
+
+    async def stream_body() -> AsyncIterator[bytes]:
         try:
-            upstream_response = await client.send(outbound_request, stream=True)
-        except httpx.TimeoutException:
-            return JSONResponse(
-                status_code=504, content={"detail": f"{module_id!r}'s own UI did not respond in time."}
-            )
-        except httpx.ConnectError:
-            return JSONResponse(
-                status_code=502, content={"detail": f"{module_id!r}'s own UI is unreachable."}
-            )
+            async for chunk in upstream_response.aiter_raw():
+                yield chunk
+        finally:
+            await upstream_response.aclose()
+            await client.aclose()
 
-        response_headers = _sanitize_frame_headers(
-            {
-                key: value
-                for key, value in upstream_response.headers.items()
-                if key.lower() not in _HOP_BY_HOP_HEADERS
-            }
-        )
-
-        if 300 <= upstream_response.status_code < 400:
-            for key in list(response_headers):
-                if key.lower() == "location":
-                    response_headers[key] = _rewrite_redirect_location(
-                        response_headers[key], module_id, target, path
-                    )
-
-        async def stream_body() -> AsyncIterator[bytes]:
-            try:
-                async for chunk in upstream_response.aiter_raw():
-                    yield chunk
-            finally:
-                await upstream_response.aclose()
-
-        response = StreamingResponse(
-            stream_body(),
-            status_code=upstream_response.status_code,
-            headers=response_headers,
-            media_type=upstream_response.headers.get("content-type"),
-        )
-        _set_proxy_cookie(response, module_id, token, exp)
-        return response
+    response = StreamingResponse(
+        stream_body(),
+        status_code=upstream_response.status_code,
+        headers=response_headers,
+        media_type=upstream_response.headers.get("content-type"),
+    )
+    _set_proxy_cookie(response, module_id, token, exp)
+    return response
 
 
 # Two routes, one handler — Starlette's {path:path} converter only matches when the URL has the
