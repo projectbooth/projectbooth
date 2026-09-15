@@ -548,3 +548,4 @@ jobs:
         run: |
           ruff check .
           python -m pytest -v
+# chore: trigger CI on fresh repo (projectbooth cutover)
