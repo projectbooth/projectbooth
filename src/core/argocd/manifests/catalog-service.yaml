@@ -19,7 +19,15 @@
 #     entry — nothing sits in front of this to verify a caller's identity
 #     until platform-gateway exists, so there's no Ingress here on purpose.
 #
-# Image: ghcr.io/dougallpercival/catalog-service:dev — hardcoded, not
+# 2026-09-15: same fix as gateway.yaml's identical comment — this manifest (both the Deployment
+# and the PreSync migration Job below) still pointed at the pre-migration
+# ghcr.io/dougallpercival/catalog-service:dev image path. ci.yml's build-and-push job has been
+# pushing to ghcr.io/projectbooth/catalog-service (its own IMAGE_NAME) since the org migration;
+# with imagePullPolicy: Always and a moving :dev tag, this silently kept running whatever was last
+# pushed to the OLD org's path, never erroring, never reflecting any commit made after the
+# migration. Found while chasing an unrelated Trino module-proxy bug in gateway — fixed here too
+# on the same pass rather than leaving a known-identical bug in place.
+# Image: ghcr.io/projectbooth/catalog-service:dev — hardcoded, not
 # templated, same "self-referencing apps" reasoning as repoURL/targetRevision
 # elsewhere in this repo (see README.md) — if you fork this repo and modify
 # catalog-service's code, point this at your own build instead (and see
@@ -67,7 +75,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: migrate
-          image: ghcr.io/dougallpercival/catalog-service:dev
+          image: ghcr.io/projectbooth/catalog-service:dev
           imagePullPolicy: Always
           command: ["alembic", "upgrade", "head"]
           env:
@@ -114,7 +122,7 @@ spec:
     spec:
       containers:
         - name: catalog-service
-          image: ghcr.io/dougallpercival/catalog-service:dev
+          image: ghcr.io/projectbooth/catalog-service:dev
           imagePullPolicy: Always
           ports:
             - containerPort: 8000

@@ -6,7 +6,14 @@
 # the Add-ons page, install/remove buttons, reverse-proxying into module
 # UIs) are all separate future branches.
 #
-# Image: ghcr.io/dougallpercival/ui-shell:dev — hardcoded, not templated,
+# 2026-09-15: same fix as gateway.yaml's identical comment — this manifest still pointed at the
+# pre-migration ghcr.io/dougallpercival/ui-shell:dev image path. ci.yml's build-and-push-ui-shell
+# job has been pushing to ghcr.io/projectbooth/ui-shell (its own IMAGE_NAME) since the org
+# migration; with imagePullPolicy: Always and a moving :dev tag, this silently kept running
+# whatever was last pushed to the OLD org's path, never erroring, never reflecting any commit made
+# after the migration. Found while chasing an unrelated Trino module-proxy bug in gateway — fixed
+# here too on the same pass rather than leaving a known-identical bug in place.
+# Image: ghcr.io/projectbooth/ui-shell:dev — hardcoded, not templated,
 # same "self-referencing apps" convention as gateway.yaml/catalog-service.yaml
 # (see argocd/README.md's "Self-referencing apps" section). imagePullPolicy:
 # Always for the same reason those files give: :dev is a moving tag.
@@ -41,7 +48,7 @@ spec:
     spec:
       containers:
         - name: ui-shell
-          image: ghcr.io/dougallpercival/ui-shell:dev
+          image: ghcr.io/projectbooth/ui-shell:dev
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
