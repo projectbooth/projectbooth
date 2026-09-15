@@ -148,6 +148,27 @@ def _proxy_cookie_name(module_id: str) -> str:
     return f"mp_token_{module_id}"
 
 
+def _strip_proxy_cookie_from_header(cookie_header: str, module_id: str) -> str | None:
+    """Removes ONLY gateway's own `mp_token_{module_id}` pair from a raw inbound `Cookie` header,
+    leaving everything else (a session cookie the MODULE itself set on an earlier response, say)
+    intact — see `_proxy_module_request`'s own call site for why blanket-stripping the whole header,
+    this function's predecessor, was a real bug: it broke Trino's login (its session cookie never
+    made it back to Trino on the next request). `Cookie:` pairs are `; `-joined per RFC 6265 §5.4 —
+    plain split/rejoin is enough here, no need for `http.cookies`' full parser (which is built for
+    the SERVER side constructing `Set-Cookie`, not for surgically editing an already-received one).
+    Returns `None` (not an empty string) when nothing remains, so the caller can tell "omit this
+    header entirely" apart from "send an empty one" — the latter isn't meaningfully different to an
+    HTTP server, but is needlessly noisy on the wire and in logs.
+    """
+    our_cookie_name = _proxy_cookie_name(module_id)
+    remaining = [
+        pair.strip()
+        for pair in cookie_header.split(";")
+        if pair.strip() and not pair.strip().startswith(f"{our_cookie_name}=")
+    ]
+    return "; ".join(remaining) if remaining else None
+
+
 def _set_proxy_cookie(response: StreamingResponse, module_id: str, token: str, exp: int) -> None:
     """Lets a module's own follow-up requests — a relative <script src>/<link href>, or a same-path
     fetch()/XHR its own bundle issues — carry the SAME proxy token the initial <iframe src> navigation
@@ -353,6 +374,22 @@ async def _proxy_module_request(module_id: str, path: str, request: Request):
         and key.lower() not in _forwarded_headers
     }
     outbound_headers.update(derived.as_headers())
+
+    # 2026-09-15 (Trino live-verification): "cookie" is blanket-excluded above like every other
+    # client-supplied auth header — correct for OUR OWN mp_token_{module_id} cookie (gateway's
+    # internal auth artifact, never meant for the module's backend), but wrong for anything ELSE
+    # riding along in the same Cookie header. Confirmed live: Trino's own POST /ui/login sets a real
+    # session cookie on success (forwarded to the browser fine — Set-Cookie isn't hop-by-hop), but
+    # the very NEXT request bounced straight back to the login page, because blanket-stripping threw
+    # that session cookie away before it ever reached Trino again — Trino saw an unauthenticated
+    # request and redirected to login, indistinguishable from a rejected login without this context.
+    # Surgical removal of just our own cookie pair — not the whole header — is what should have
+    # happened from the start; anything else the module itself set legitimately needs to round-trip.
+    inbound_cookie_header = request.headers.get("cookie")
+    if inbound_cookie_header:
+        remaining_cookies = _strip_proxy_cookie_from_header(inbound_cookie_header, module_id)
+        if remaining_cookies:
+            outbound_headers["cookie"] = remaining_cookies
 
     # `token` is gateway's own auth mechanism for this route, not something the module itself should
     # ever see; every other query param passes through untouched.
