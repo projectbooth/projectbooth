@@ -15,16 +15,20 @@ displayName: Trino
 icon: puzzle   # no dedicated glyph exists yet (src/core/ui-shell/src/modules/icons.tsx) — falls
                # back to the generic outline glyph; add a real one there if this earns it later
 navPath: /trino
-# The coordinator's own Kubernetes Service is "trino-coordinator" (not just "trino") — that's the
-# chart's own naming convention for a release named "trino" (platform-cli's `module install` uses
-# the module's id as the Helm release name). Confirmed against trinodb/charts' own published
-# "Monitoring & Observability" docs (its ServiceMonitor config names the Service explicitly), not
-# guessed — but NOT hand-verified with a live `helm template` (no helm binary was available in the
-# sandbox this was researched in). Re-confirm with `kubectl get svc -n trino` the first time this
-# actually installs against a real cluster, per this plan's own live-verification steps.
+# 2026-09-15: the coordinator's Service is actually just "trino" (release name, no "-coordinator"
+# suffix) — confirmed with the live `kubectl get svc -n trino` this file's own prior comment said to
+# run, the first time this genuinely mattered (the module-proxy 502'd with a ConnectError trying to
+# reach the old, wrong guess). The chart also creates a separate headless "trino-worker" Service
+# (ClusterIP: None, for worker-to-worker/coordinator discovery, not meant to be proxied into) —
+# don't confuse the two. The prior comment's "confirmed against trinodb/charts' docs, not guessed"
+# framing was true as far as it went but still wrong in practice: a ServiceMonitor's target-naming
+# convention documented in prose is not the same as the chart's actual `{{ .Release.Name }}`-based
+# template logic, which is what really determines the name. Lesson for this file specifically:
+# proxyTo/healthCheck are exactly the fields this repo's own "confirm before committing" discipline
+# exists for — a live `kubectl get svc` beats any doc reference, every time it's available.
 # service.port defaults to 8080 in the chart and is left at that default (see values: below — no
 # service.port override).
-proxyTo: http://trino-coordinator.trino.svc:8080
+proxyTo: http://trino.trino.svc:8080
 # /v1/info is the same HTTP path the chart's own coordinator livenessProbe already uses (returns
 # coordinator identity/version JSON, 200 when up) — reused here rather than inventing a new one.
 healthCheck: /v1/info
