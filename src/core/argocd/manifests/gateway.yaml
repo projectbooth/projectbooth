@@ -4,7 +4,19 @@
 # ARCHITECTURE.md §3 gateway (no nav aggregation, Add-ons page API, or
 # module registry; those need ui-shell/a second module to exist first).
 #
-# Image: ghcr.io/dougallpercival/gateway:dev — hardcoded, not templated,
+# 2026-09-15: fixed a real, live bug — this manifest still pointed at the pre-migration image path
+# (ghcr.io/dougallpercival/gateway:dev). ci.yml's build-and-push-gateway job has been pushing every
+# built image to ghcr.io/projectbooth/gateway (confirmed straight from its own IMAGE_NAME env var,
+# not guessed) since whenever this project's org migrated from DougallPercival to projectbooth —
+# same underlying migration the argocd repoURL fix earlier today addressed, just a reference this
+# pass missed. Because imagePullPolicy is Always and the tag (:dev) never changes, Kubernetes kept
+# successfully repulling *an* image from the old, abandoned org path on every rollout — it just
+# never contained any commit made after the migration, which silently broke every fix pushed to
+# gateway (and, by the same bug, ui-shell and catalog-service) without ever surfacing an error: no
+# pull failure, no CrashLoopBackOff, just stale code running convincingly. Found only because the
+# live Trino module-proxy 406 persisted despite `platform.io/git-sha` correctly showing the right
+# commit — the annotation was honest, the image itself was the lie.
+# Image: ghcr.io/projectbooth/gateway:dev — hardcoded, not templated,
 # same "self-referencing apps" convention as catalog-service.yaml (see that
 # file's own comment, and argocd/README.md's "Self-referencing apps"
 # section) — fork this repo and modify gateway's code, point this at your
@@ -84,7 +96,7 @@ spec:
       serviceAccountName: gateway
       containers:
         - name: gateway
-          image: ghcr.io/dougallpercival/gateway:dev
+          image: ghcr.io/projectbooth/gateway:dev
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
