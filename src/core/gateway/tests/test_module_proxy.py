@@ -401,6 +401,66 @@ def test_proxy_returns_504_when_module_times_out(sign_proxy_token, mounted_sa):
 
 
 @respx.mock
+def test_proxy_rewrites_a_same_host_redirect_back_under_the_proxy_path(sign_proxy_token, mounted_sa):
+    # 2026-09-15, live Trino verification: Trino's coordinator 303s `GET /` to `/ui/`, built as the
+    # FULL absolute URL it thinks is its own address (http://<its-own-service-dns>/ui/, matching
+    # MODULE_BASE's shape here) — confirmed live via DevTools' Network tab, not guessed. Passed
+    # through unmodified, the browser tries to navigate the iframe straight to that address, which a
+    # real browser can never resolve (it's a cluster-internal-only hostname) — the iframe just goes
+    # blank, no visible error anywhere. Regression test for _rewrite_redirect_location, exercised
+    # through the real route rather than calling the helper directly.
+    token = sign_proxy_token("hello-module")
+    _mock_k8s([_application("hello-module")])
+    respx.get(f"{MODULE_BASE}/").mock(
+        return_value=httpx.Response(303, headers={"location": f"{MODULE_BASE}/ui/"})
+    )
+
+    with TestClient(app) as client:
+        response = client.get(f"/modules/hello-module/proxy?token={token}", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/modules/hello-module/proxy/ui/"
+
+
+@respx.mock
+def test_proxy_rewrites_a_path_absolute_redirect_too(sign_proxy_token, mounted_sa):
+    # A module returning a bare path-absolute Location (no scheme/host) is a different but similarly
+    # broken case if left alone: the browser would resolve it against gateway's own origin
+    # (https://gateway.platform.local/ui/), a path gateway has no route for at all.
+    token = sign_proxy_token("hello-module")
+    _mock_k8s([_application("hello-module")])
+    respx.get(f"{MODULE_BASE}/").mock(return_value=httpx.Response(303, headers={"location": "/ui/"}))
+
+    with TestClient(app) as client:
+        response = client.get(f"/modules/hello-module/proxy?token={token}", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/modules/hello-module/proxy/ui/"
+
+
+@respx.mock
+def test_proxy_leaves_a_genuinely_external_redirect_untouched(sign_proxy_token, mounted_sa):
+    # A module redirecting somewhere that ISN'T itself (an OAuth provider, say) must pass through
+    # as-is — rewriting it would send the browser to a broken gateway-local path instead of the real
+    # external destination the module actually intended.
+    token = sign_proxy_token("hello-module")
+    _mock_k8s([_application("hello-module")])
+    respx.get(f"{MODULE_BASE}/login").mock(
+        return_value=httpx.Response(
+            303, headers={"location": "https://accounts.example.com/o/oauth2/auth"}
+        )
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            f"/modules/hello-module/proxy/login?token={token}", follow_redirects=False
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "https://accounts.example.com/o/oauth2/auth"
+
+
+@respx.mock
 def test_proxy_streams_a_post_body_through(sign_proxy_token, mounted_sa):
     token = sign_proxy_token("hello-module")
     _mock_k8s([_application("hello-module")])
