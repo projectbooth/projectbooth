@@ -62,7 +62,7 @@ spec:
   # own docstring for why generated content doesn't need the "forkers: edit this" caveat this one
   # does.
   source:
-    repoURL: git@github.com:DougallPercival/opendataplatform.git
+    repoURL: git@github.com:projectbooth/projectbooth.git
     targetRevision: dev
     path: src/modules-enabled
     directory:
