@@ -1,0 +1,24 @@
+# Copy this folder to src/modules/<your-module-name>/ and fill in the blanks.
+# Reference example (ARCHITECTURE.md §3): notebook-jupyterhub.
+# `platform-cli module scaffold <name>` (platform-module-lifecycle branch, 2026-09-03) generates
+# this file for you with id/displayName/navPath/proxyTo/namespace already filled in from <name>.
+id: __MODULE_ID__
+displayName: __Display Name__
+icon: puzzle          # any icon name the ui-shell's icon set recognizes
+navPath: /__module_id__
+proxyTo: http://__service__.__namespace__.svc:80
+healthCheck: /healthz
+# Other MODULE ids only — things that get their own src/modules-enabled/<id>.yaml, i.e. something
+# `platform module install` itself generated an Application for. NOT core services (auth/Keycloak,
+# catalog-service, gateway, ...): those are always present from bootstrap, never installed this
+# way, so `platform module install` would block forever waiting for an Application that will never
+# exist. Leave this empty unless this module genuinely depends on another module being installed
+# and healthy first — e.g. requires: [hello-module]. `--skip-requires-check` bypasses this check.
+requires: []
+optional: true
+# Argo CD Application destination.namespace for this module, per `platform_cli/manifest.py`'s
+# ModuleManifest — additive over what ARCHITECTURE.md §3's example module.yaml shows, since
+# something has to decide where this module's chart actually deploys, the same way every core
+# service already gets its own namespace named after itself. Defaults to `id` when omitted
+# entirely; only spell it out here if the module needs a namespace that doesn't match its id.
+# namespace: __module_id__

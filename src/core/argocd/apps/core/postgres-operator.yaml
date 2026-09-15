@@ -1,0 +1,37 @@
+# CloudNativePG — brings Postgres into core (ARCHITECTURE.md §8's Phase 1 piece,
+# pulled forward to Phase 0 because Keycloak needs a database before Phase 1
+# otherwise would provide one). Verified against the project's own docs/README
+# on 2026-08-30, not assumed: chart repo, version, and the operand image tag
+# below are all confirmed current as of that date — check for newer before a
+# real install regardless: https://github.com/cloudnative-pg/charts/releases
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: postgres-operator
+  namespace: argocd
+  labels:
+    platform.io/tier: core
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: https://cloudnative-pg.github.io/charts
+    chart: cloudnative-pg
+    targetRevision: 0.29.0   # appVersion 1.30.0 — check for newer: https://github.com/cloudnative-pg/charts/releases
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cnpg-system   # matches upstream's own convention, not an arbitrary choice
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # CNPG's own CRDs (clusters.postgresql.cnpg.io, poolers.postgresql.cnpg.io)
+      # are large enough that plain client-side apply's last-applied-configuration
+      # annotation blows past Kubernetes' 256KiB annotation limit — same failure
+      # class as Argo CD's own applicationsets.argoproj.io CRD (see bootstrap/
+      # install.sh and docs/known-issues.md). Server-side apply sidesteps the
+      # annotation entirely.
+      - ServerSideApply=true

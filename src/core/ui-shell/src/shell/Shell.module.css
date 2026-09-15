@@ -1,0 +1,72 @@
+.shell {
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-bottom: 1px solid light-dark(#e0e0e6, #333);
+}
+
+.title {
+  margin: 0;
+  font-size: 18px;
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-left: 24px;
+  flex: 1;
+}
+
+.navLink {
+  color: inherit;
+  opacity: 0.7;
+  text-decoration: none;
+  font-size: 14px;
+}
+
+.navLink:hover {
+  opacity: 1;
+}
+
+.navLinkActive {
+  composes: navLink;
+  opacity: 1;
+  font-weight: 500;
+}
+
+.headerControls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.username {
+  opacity: 0.8;
+  font-size: 14px;
+}
+
+.content {
+  /* Explicit resets, not just new properties: index.css's global `main`
+     selector centers/flex-columns everything (written for the old
+     placeholder page, still relied on by shell/LoginScreen.tsx's own bare
+     <main>) — this class selector's higher specificity overrides it, but
+     spelled out explicitly here rather than left to rely on that alone. */
+  display: block;
+  align-items: normal;
+  justify-content: normal;
+  text-align: left;
+  flex: 1;
+  padding: 20px;
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+  box-sizing: border-box;
+}

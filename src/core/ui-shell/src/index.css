@@ -1,0 +1,25 @@
+/* True globals only — item 5 (ui-shell-plan.md) moved everything else to
+   colocated CSS Modules (Component.module.css next to each Component.tsx).
+   The bare `main` rule below is still real, not leftover: it's what centers
+   shell/LoginScreen.tsx's unauthenticated/error screen (still a plain
+   <main>, no module of its own needed for something this small).
+   shell/Shell.module.css's `.content` class explicitly overrides these same
+   properties for the authenticated app's own <main> — see its own comment. */
+:root {
+  color-scheme: light dark;
+  font: 18px/1.5 system-ui, 'Segoe UI', Roboto, sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 8px;
+}

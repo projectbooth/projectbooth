@@ -1,0 +1,54 @@
+# Added 2026-09-03 — discovered missing entirely during the platform-module-lifecycle branch's
+# live verification: `platform module install`'s new require_clean_worktree guard (repo.py — the
+# first platform-cli command that refuses to run against ANY uncommitted change, including
+# untracked files, not just modified ones) tripped on __pycache__ directories left over from
+# `pip install`/`pytest` runs, which had nowhere to be ignored because this repo never had a root
+# .gitignore at all. Confirmed via `git ls-files | grep -E "__pycache__|\.pytest_cache|..."` that
+# nothing junky was ever actually committed — this is purely "add the missing file," not a cleanup
+# of already-tracked cruft (a .gitignore can't retroactively un-track something already committed
+# anyway; `git rm --cached` would be the tool for that, not needed here).
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Generated, never committed — build-and-push-gateway's CI step (ci.yml) regenerates this on every
+# gateway build via `platform module build-index` (ui-shell-plan.md item 6). See
+# src/core/gateway/app/config.py's static_module_index_path and README.md's "Running it locally"
+# for running the generator by hand.
+src/core/gateway/app/module_catalog.json
+
+# Secrets / local config — never commit these
+*.env
+.env.*
+# Exceptions to .env.* above (ui-shell-plan.md item 3, feature/ui-shell-oauth):
+# Vite's own convention is to COMMIT .env.production/.env.example (baked into
+# the build, cluster-constant, nothing secret in them — see .env.production's
+# own comment) and gitignore only the developer's real .env. That deliberately
+# differs from the Python services' convention the .env.* rule above was
+# written for; these two are the first files in this repo that need it.
+!src/core/ui-shell/.env.production
+!src/core/ui-shell/.env.example
+bootstrap/.env
+kubeconfig*
+*.kubeconfig
+sealed-secrets-private-key.yaml
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+
+# Helm
+charts/**/charts/
+charts/**/*.tgz
+
+# Node / ui-shell (feature/ui-shell-scaffold, 2026-09-04) — .env.local and friends are already
+# covered by the .env.* pattern above, not duplicated here.
+node_modules/
+dist/
+*.tsbuildinfo
+.vite/

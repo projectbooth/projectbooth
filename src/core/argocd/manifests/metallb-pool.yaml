@@ -1,0 +1,30 @@
+# homelab-dev's LAN is 192.168.4.0/24 (eero router). .240-.250 confirmed free
+# of both active hosts and eero's DHCP range (checked 2026-08-30 — reachability
+# tested directly with ping rather than trusting an assumed DHCP boundary; see
+# docs/known-issues.md if that ever needs re-verifying after a router change).
+#
+# This is a concrete, network-specific value on purpose — there's no way to
+# auto-derive "which slice of your subnet is safe" the way install.sh derives
+# REPO_URL/REVISION. That means it goes stale silently if this repo ever runs
+# against different hardware/network than it was set up on: MetalLB's
+# L2Advertisement mode ARPs on the local subnet, so a mismatched pool doesn't
+# just risk a conflict, it doesn't work AT ALL. install.sh checks this
+# automatically at install time (warns, doesn't block) — update this file
+# first if you ever see that warning.
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: default-pool
+  namespace: metallb-system
+spec:
+  addresses:
+    - 192.168.4.240-192.168.4.250
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: default
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - default-pool

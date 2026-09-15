@@ -1,0 +1,61 @@
+[project]
+name = "catalog-service"
+version = "0.1.0"
+description = "catalog-lite — the Unity-Catalog analog (ARCHITECTURE.md §2, §4, §12). Datasets, functions, pipelines, models, workspaces; Postgres + FastAPI, deliberately lightweight over OpenMetadata/DataHub."
+requires-python = ">=3.12"
+# No `readme = "README.md"` here on purpose: this package is only ever
+# `pip install`ed locally (editable, for dev) or baked into the Docker
+# image, never published anywhere a rendered README would matter — and the
+# Dockerfile deliberately does NOT COPY README.md into the build (see
+# .dockerignore), so declaring it here would break `pip install .` inside
+# the actual container build with "Readme file does not exist" (hatchling
+# validates the referenced file exists at build time). Caught by actually
+# simulating the Dockerfile's exact COPY list before shipping this, not by
+# inspection — `pip install -e .` from the full checkout never hits this,
+# only a build from the Dockerfile's narrower file set does.
+
+# First Python code in this repo (2026-09-01) — this pyproject.toml sets the
+# convention platform-sdk and platform-cli are expected to follow: plain
+# PEP 621 + hatchling, no poetry/pipenv. Versions below are minimums, not
+# exact pins like the Helm charts in src/core/argocd/apps/ — application
+# dependencies drift less dangerously than infra chart versions (nothing here
+# silently changes cluster-facing behavior the way a chart bump can), so
+# "check for newer" matters less than being unblocked by a stale exact pin.
+# Still worth an occasional `pip list --outdated` pass.
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "sqlalchemy>=2.0.35",
+  "alembic>=1.13.3",
+  "psycopg[binary]>=3.2.3",
+  "pydantic>=2.9",
+  "pydantic-settings>=2.5",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3",
+  "httpx>=0.27",
+  "ruff>=0.7",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# B008 (function-call-in-default-argument) is a false positive for every
+# FastAPI handler in this service — Depends(...)/Header(...) as a default
+# argument value is the framework's own required pattern, not a bug.
+ignore = ["B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

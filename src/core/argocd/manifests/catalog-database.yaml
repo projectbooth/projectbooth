@@ -1,0 +1,34 @@
+# The `catalog` database catalog-service's schema (../../catalog-service/
+# app/models.py, applied via its Alembic migrations — this CR does NOT run
+# migrations, it only makes the database exist for them to run against) —
+# owned by the `catalog` role declared in postgres-cluster.yaml's
+# managed.roles.
+#
+# Uses CNPG's declarative Database CRD (postgresql.cnpg.io/v1, added in CNPG
+# 1.24 — this repo runs the operator at 1.30, see postgres-operator.yaml)
+# instead of a manual CREATE-DATABASE Job like postgres-backup.yaml's bucket
+# creation: unlike an S3 bucket, "does this database exist, owned by this
+# role" is exactly what this CRD reconciles for you, so there's no reason to
+# hand-roll it with psql in a Job the way there was no equivalent CRD for
+# SeaweedFS bucket creation. bootstrap.initdb (postgres-cluster.yaml) still
+# only ever creates the ORIGINAL `keycloak` database at cluster-creation
+# time — it's not re-run for every database this cluster ends up hosting,
+# which is exactly the gap this CR fills for every database after the first.
+#
+# databaseReclaimPolicy: retain (not delete) — deleting this CR (e.g. by
+# mistake, or during a refactor) must NOT drop the database and everything
+# in it. Same instinct as postgres-backup.yaml's ScheduledBackup retention:
+# destroying data should take an explicit, deliberate action, never a side
+# effect of editing GitOps manifests.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: catalog-database
+  namespace: postgres
+spec:
+  name: catalog
+  owner: catalog
+  cluster:
+    name: platform-postgres
+  ensure: present
+  databaseReclaimPolicy: retain

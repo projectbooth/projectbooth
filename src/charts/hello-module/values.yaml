@@ -1,0 +1,22 @@
+# Local `helm template`/`helm lint` defaults only — the real deployed values come from the
+# Application `platform module install hello-module` generates from
+# src/modules/hello-module/module.yaml (placement.role: compute in particular; empty here so a
+# bare `helm template` against this chart doesn't imply a real placement decision on its own).
+replicaCount: 1
+
+image:
+  repository: nginx
+  tag: stable
+  pullPolicy: IfNotPresent
+
+service:
+  port: 80
+
+placement: {}
+
+# Deliberately small — this PVC is never actually read by nginx (mounted at /data, which nginx
+# never serves from). It exists purely so `platform module uninstall hello-module` (plain, leaves
+# it) vs `--purge-data` (prints the kubectl command to remove it) has something real to prove
+# against. See templates/pvc.yaml for the label + Delete=false convention this relies on.
+storage:
+  size: 64Mi

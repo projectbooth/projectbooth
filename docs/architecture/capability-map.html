@@ -1,0 +1,168 @@
+<title>Capability Map</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+  :root{
+    --paper:#F3F4F0;
+    --paper-raised:#FFFFFF;
+    --ink:#1A1E1B;
+    --ink-soft:#4A524C;
+    --ink-faint:#818A83;
+    --line:#D9DCD4;
+    --line-strong:#C2C7BC;
+    --accent:#2B6C60;
+    --accent-soft:#E1EDE9;
+    --amber:#9C6A20;
+    --amber-soft:#F1E5D1;
+    --core-zone-bg:#EDF3F1;
+    --core-zone-line:#BFD6CF;
+    --shadow:rgba(26,30,27,0.10);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#14181A;
+      --paper-raised:#1B2124;
+      --ink:#E7ECE8;
+      --ink-soft:#A3ACA5;
+      --ink-faint:#6F7871;
+      --line:#2A312C;
+      --line-strong:#3A433C;
+      --accent:#78C4B2;
+      --accent-soft:#1C2C29;
+      --amber:#D9A75A;
+      --amber-soft:#332815;
+      --core-zone-bg:#182422;
+      --core-zone-line:#2E4B44;
+      --shadow:rgba(0,0,0,0.4);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#14181A;
+    --paper-raised:#1B2124;
+    --ink:#E7ECE8;
+    --ink-soft:#A3ACA5;
+    --ink-faint:#6F7871;
+    --line:#2A312C;
+    --line-strong:#3A433C;
+    --accent:#78C4B2;
+    --accent-soft:#1C2C29;
+    --amber:#D9A75A;
+    --amber-soft:#332815;
+    --core-zone-bg:#182422;
+    --core-zone-line:#2E4B44;
+    --shadow:rgba(0,0,0,0.4);
+  }
+
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:'IBM Plex Sans', -apple-system, 'Segoe UI', sans-serif;
+  }
+  header{
+    max-width:920px; margin:0 auto; padding:2.75rem 2rem 1.25rem;
+  }
+  .eyebrow{
+    font-family:'IBM Plex Mono',monospace; font-size:.72rem; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--accent); margin:0 0 .8rem;
+  }
+  h1{
+    font-family:'IBM Plex Serif', Georgia, serif; font-weight:600; font-size:2rem;
+    margin:0 0 .8rem; text-wrap:balance;
+  }
+  p.dek{ font-size:1.02rem; color:var(--ink-soft); max-width:66ch; margin:0 0 1rem; }
+  .legend{
+    display:flex; gap:1.75rem; flex-wrap:wrap; align-items:center;
+    font-size:.85rem; color:var(--ink-soft); padding-top:.6rem; border-top:1px solid var(--line);
+  }
+  .legend span{ display:inline-flex; align-items:center; gap:.5rem; }
+  .swatch{ width:1.1rem; height:.75rem; border-radius:4px; display:inline-block; }
+  .swatch.core{ background:var(--accent-soft); border:1.5px solid var(--accent); }
+  .swatch.module{ background:var(--amber-soft); border:1.5px solid var(--amber); }
+  .swatch.zone{ background:var(--core-zone-bg); border:1.5px solid var(--core-zone-line); }
+
+  .diagram-wrap{
+    max-width:1460px; margin:0 auto; padding:1rem 1rem 3.5rem;
+    overflow-x:auto;
+  }
+  svg{ display:block; margin:0 auto; }
+
+  .core-zone{ fill:var(--core-zone-bg); stroke:var(--core-zone-line); stroke-width:1.5; }
+  .core-zone-label{
+    font-family:'IBM Plex Mono',monospace; font-size:12.5px; letter-spacing:.14em;
+    fill:var(--ink-faint);
+  }
+  .core-box{ fill:var(--paper-raised); stroke:var(--accent); stroke-width:1.6; }
+  .core-title{ font-family:'IBM Plex Sans',sans-serif; font-weight:600; font-size:14px; fill:var(--ink); }
+  .core-sub{ font-family:'IBM Plex Mono',monospace; font-size:10.5px; fill:var(--ink-soft); }
+
+  .module-box{ fill:var(--paper-raised); stroke:var(--amber); stroke-width:1.4; }
+  .module-title{ font-family:'IBM Plex Sans',sans-serif; font-weight:600; font-size:13.5px; fill:var(--ink); }
+  .module-sub{ font-family:'IBM Plex Mono',monospace; font-size:10px; fill:var(--ink-soft); }
+
+  .spoke{ stroke:var(--line-strong); stroke-width:1.5; stroke-dasharray:3 4; }
+  .sector-label{
+    font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.1em;
+    fill:var(--ink-faint);
+  }
+
+  footer{
+    max-width:920px; margin:0 auto; padding:0 2rem 3rem; font-size:.85rem; color:var(--ink-faint);
+  }
+</style>
+
+<header>
+  <p class="eyebrow">Architecture &middot; Capability Map</p>
+  <h1>Core vs. modules, at a glance</h1>
+  <p class="dek">The seven boxes in the center are the only mandatory pieces &mdash; install those and you have a working, empty platform. Everything around it is opt-in: pick what a use case needs, skip the rest, add more later. Dashed spokes mark where each group plugs into the core through the gateway&rsquo;s module registry, not into each other.</p>
+  <div class="legend">
+    <span><span class="swatch zone"></span> Platform core (mandatory)</span>
+    <span><span class="swatch core"></span> Core service</span>
+    <span><span class="swatch module"></span> Optional module</span>
+  </div>
+</header>
+
+<div class="diagram-wrap">
+<svg viewBox="0 0 1380 1058" width="1380" height="1058" xmlns="http://www.w3.org/2000/svg">
+<rect class="core-zone" x="350.0" y="468.0" width="680.0" height="292.0" rx="20"/>
+<text class="core-zone-label" x="690.0" y="494.0" text-anchor="middle">PLATFORM CORE</text>
+<g><rect class="core-box" x="374.0" y="524.0" width="632.0" height="60.0" rx="10"/><text class="core-title" x="690.0" y="550.0" text-anchor="middle">Platform Shell</text><text class="core-sub" x="690.0" y="568.0" text-anchor="middle">UI + workspace switcher</text></g>
+<g><rect class="core-box" x="374.0" y="600.0" width="200.0" height="60.0" rx="10"/><text class="core-title" x="474.0" y="626.0" text-anchor="middle">Gateway</text><text class="core-sub" x="474.0" y="644.0" text-anchor="middle">Nav · Add-ons API</text></g>
+<g><rect class="core-box" x="590.0" y="600.0" width="200.0" height="60.0" rx="10"/><text class="core-title" x="690.0" y="626.0" text-anchor="middle">Identity & Tenancy</text><text class="core-sub" x="690.0" y="644.0" text-anchor="middle">Keycloak · workspaces</text></g>
+<g><rect class="core-box" x="806.0" y="600.0" width="200.0" height="60.0" rx="10"/><text class="core-title" x="906.0" y="626.0" text-anchor="middle">GitOps Engine</text><text class="core-sub" x="906.0" y="644.0" text-anchor="middle">Argo CD</text></g>
+<g><rect class="core-box" x="374.0" y="676.0" width="200.0" height="60.0" rx="10"/><text class="core-title" x="474.0" y="702.0" text-anchor="middle">Catalog & Shared Code</text><text class="core-sub" x="474.0" y="720.0" text-anchor="middle">catalog-lite · SDK · CLI</text></g>
+<g><rect class="core-box" x="590.0" y="676.0" width="200.0" height="60.0" rx="10"/><text class="core-title" x="690.0" y="702.0" text-anchor="middle">Storage Bedrock</text><text class="core-sub" x="690.0" y="720.0" text-anchor="middle">SeaweedFS · Postgres</text></g>
+<g><rect class="core-box" x="806.0" y="676.0" width="200.0" height="60.0" rx="10"/><text class="core-title" x="906.0" y="702.0" text-anchor="middle">Cluster Infrastructure</text><text class="core-sub" x="906.0" y="720.0" text-anchor="middle">k3s · network · secrets</text></g>
+<line class="spoke" x1="558.0" y1="454.0" x2="558.0" y2="468.0"/>
+<text class="sector-label" x="558.0" y="76.0" text-anchor="middle">ANALYTICAL & SERVING</text>
+<g><rect class="module-box" x="458.0" y="90.0" width="200.0" height="60.0" rx="10"/><text class="module-title" x="558.0" y="125.0" text-anchor="middle">JupyterHub</text></g>
+<g><rect class="module-box" x="458.0" y="166.0" width="200.0" height="60.0" rx="10"/><text class="module-title" x="558.0" y="201.0" text-anchor="middle">Streamlit</text></g>
+<g><rect class="module-box" x="458.0" y="242.0" width="200.0" height="60.0" rx="10"/><text class="module-title" x="558.0" y="277.0" text-anchor="middle">Superset</text></g>
+<g><rect class="module-box" x="458.0" y="318.0" width="200.0" height="60.0" rx="10"/><text class="module-title" x="558.0" y="353.0" text-anchor="middle">MLflow</text></g>
+<line class="spoke" x1="822.0" y1="454.0" x2="822.0" y2="468.0"/>
+<text class="sector-label" x="822.0" y="304.0" text-anchor="middle">OBSERVABILITY</text>
+<g><rect class="module-box" x="722.0" y="318.0" width="200.0" height="60.0" rx="10"/><text class="module-title" x="822.0" y="353.0" text-anchor="middle">Prometheus · Grafana · Loki</text></g>
+<line class="spoke" x1="558.0" y1="760.0" x2="558.0" y2="836.0"/>
+<text class="sector-label" x="558.0" y="1014.0" text-anchor="middle">ORCHESTRATION</text>
+<g><rect class="module-box" x="458.0" y="850.0" width="200.0" height="60.0" rx="10"/><text class="module-title" x="558.0" y="885.0" text-anchor="middle">Dagster</text></g>
+<g><rect class="module-box" x="458.0" y="926.0" width="200.0" height="60.0" rx="10"/><text class="module-title" x="558.0" y="961.0" text-anchor="middle">Argo Workflows</text></g>
+<line class="spoke" x1="822.0" y1="760.0" x2="822.0" y2="836.0"/>
+<text class="sector-label" x="822.0" y="1014.0" text-anchor="middle">STORAGE EXTRAS</text>
+<g><rect class="module-box" x="722.0" y="850.0" width="200.0" height="60.0" rx="10"/><text class="module-title" x="822.0" y="885.0" text-anchor="middle">Iceberg</text></g>
+<g><rect class="module-box" x="722.0" y="926.0" width="200.0" height="60.0" rx="10"/><text class="module-title" x="822.0" y="961.0" text-anchor="middle">Redis</text></g>
+<line class="spoke" x1="350.0" y1="614.0" x2="260.0" y2="614.0"/>
+<text class="sector-label" x="160.0" y="568.0" text-anchor="middle">CODE HOSTING</text>
+<g><rect class="module-box" x="60.0" y="584.0" width="200.0" height="60.0" rx="10"/><text class="module-title" x="160.0" y="619.0" text-anchor="middle">Gitea / GitHub</text></g>
+<line class="spoke" x1="1030.0" y1="518.0" x2="1120.0" y2="518.0"/>
+<text class="sector-label" x="1220.0" y="434.0" text-anchor="middle">COMPUTE</text>
+<g><rect class="module-box" x="1120.0" y="450.0" width="200.0" height="60.0" rx="10"/><text class="module-title" x="1220.0" y="485.0" text-anchor="middle">Spark Operator</text></g>
+<g><rect class="module-box" x="1120.0" y="526.0" width="200.0" height="60.0" rx="10"/><text class="module-title" x="1220.0" y="561.0" text-anchor="middle">Dask / Ray</text></g>
+<line class="spoke" x1="1030.0" y1="710.0" x2="1120.0" y2="710.0"/>
+<text class="sector-label" x="1220.0" y="626.0" text-anchor="middle">QUERY & VIRTUALIZATION</text>
+<g><rect class="module-box" x="1120.0" y="642.0" width="200.0" height="60.0" rx="10"/><text class="module-title" x="1220.0" y="677.0" text-anchor="middle">Trino</text></g>
+<g><rect class="module-box" x="1120.0" y="718.0" width="200.0" height="60.0" rx="10"/><text class="module-title" x="1220.0" y="753.0" text-anchor="middle">dbt</text></g>
+</svg>
+</div>
+
+<footer>
+  Full detail on every piece &mdash; what each does, why it&rsquo;s core vs. optional, and how modules register themselves &mdash; lives in <code>docs/architecture/ARCHITECTURE.md</code> &sect;2 and &sect;3.
+</footer>

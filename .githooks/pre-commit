@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Blocks commits made directly on a protected branch (main, test, dev).
+# Feature/fix work should happen on its own branch cut from dev, landed
+# back in via a PR — this catches the mistake before it's even committed.
+#
+# Bypass (rare — e.g. you really do mean to commit here): git commit --no-verify
+
+protected_branches="^(main|test|dev)$"
+# symbolic-ref (not rev-parse) so this still works on the very first
+# commit of a fresh repo, before HEAD has anything to resolve to.
+current_branch=$(git symbolic-ref --short HEAD 2>/dev/null)
+
+if [[ "$current_branch" =~ $protected_branches ]]; then
+  echo ""
+  echo "Direct commit blocked on protected branch '$current_branch'."
+  echo "  Create a feature branch instead:"
+  echo "    git checkout -b feature/<name> dev"
+  echo "  Then open a PR back into dev."
+  echo ""
+  echo "  Really mean it? git commit --no-verify"
+  echo ""
+  exit 1
+fi
+
+exit 0

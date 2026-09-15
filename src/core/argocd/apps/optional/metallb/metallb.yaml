@@ -1,0 +1,27 @@
+# Optional (2026-08-31) — only synced when its parent, optional/metallb-app.yaml,
+# is applied by install.sh (default: yes; --skip-metallb to opt out). See
+# README.md's "Portability" section.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: metallb
+  namespace: argocd
+  labels:
+    platform.io/tier: optional
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: https://metallb.github.io/metallb
+    chart: metallb
+    targetRevision: 0.14.9   # check for newer: https://github.com/metallb/metallb/releases
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: metallb-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

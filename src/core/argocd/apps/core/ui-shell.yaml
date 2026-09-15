@@ -1,0 +1,40 @@
+# ui-shell itself — see manifests/ui-shell.yaml for the full design writeup
+# (why no RBAC/env/volumes, what's still deferred).
+#
+# Wave 4, same wave as gateway: this slice makes zero backend calls, so it
+# has no real ordering dependency on gateway or catalog-service — at least
+# as decoupled as gateway already is from catalog-service (see gateway's own
+# app pointer's comment on why that pairing is cosmetic, not functional).
+# Groups the two "front door" services together rather than overloading
+# wave 5, which argocd/README.md's table reserves for modules-root's
+# distinct module-install-ordering meaning.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ui-shell
+  namespace: argocd
+  labels:
+    platform.io/tier: core
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: default
+  # Hardcoded, not __REPO_URL__/__REVISION__ — see README.md ("Self-referencing
+  # apps") for why: install.sh's placeholder substitution only ever touches
+  # root-app.yaml, never the files under apps/, which Argo CD reads straight
+  # from git with no templating of its own.
+  source:
+    repoURL: git@github.com:DougallPercival/opendataplatform.git
+    targetRevision: dev
+    path: src/core/argocd/manifests
+    directory:
+      include: "ui-shell.yaml"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ui-shell
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

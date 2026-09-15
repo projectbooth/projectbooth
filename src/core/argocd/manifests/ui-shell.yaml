@@ -1,0 +1,130 @@
+# ui-shell — the static React/TS/Vite SPA scaffold, item 1 of
+# docs/architecture/ui-shell-plan.md. See ../../ui-shell/README.md for what's
+# built vs. still deferred: this is deliberately a placeholder page only, no
+# backend calls, no auth, no dynamic content — items 2-8 of that plan (the
+# same-origin/CORS decision, browser OAuth, the module registry, real nav,
+# the Add-ons page, install/remove buttons, reverse-proxying into module
+# UIs) are all separate future branches.
+#
+# Image: ghcr.io/dougallpercival/ui-shell:dev — hardcoded, not templated,
+# same "self-referencing apps" convention as gateway.yaml/catalog-service.yaml
+# (see argocd/README.md's "Self-referencing apps" section). imagePullPolicy:
+# Always for the same reason those files give: :dev is a moving tag.
+#
+# No ServiceAccount/RBAC, no env vars, no volumes: unlike gateway, this
+# container makes no Kubernetes API calls and has no config to inject — it's
+# nginx serving a static asset bundle, nothing else.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ui-shell
+  namespace: ui-shell
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ui-shell
+  template:
+    metadata:
+      labels:
+        app: ui-shell
+      # Bumped to the real commit SHA by ci.yml's build-and-push-ui-shell job after every push-
+      # triggered image build (.github/scripts/set-git-sha-annotation.sh) — a placeholder until
+      # then. Closes docs/known-issues.md's stale-pod gotcha, hit repeatedly against this exact
+      # Deployment this session: this repo's `:dev` tag is a moving target, so Synced/Healthy
+      # alone never proves a new image is actually running. Changing THIS value changes the pod
+      # template, which is what actually makes Kubernetes roll new pods — exactly what
+      # `kubectl rollout restart` does by patching a similar annotation, just automatic and with
+      # a value you can compare against a commit instead of a bare timestamp.
+      annotations:
+        platform.io/git-sha: "6340ffcef26e48c7df3b9bbb7bbfacb824fac32c"
+    spec:
+      containers:
+        - name: ui-shell
+          image: ghcr.io/dougallpercival/ui-shell:dev
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            # No dedicated /healthz — nginx already returns 200 on / once
+            # index.html exists, and there's nothing behind this container
+            # that could be "up but not ready" the way gateway's dependency
+            # on Keycloak/catalog-service is. Revisit if/when this ever
+            # proxies to something (item 8).
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            # Homelab-scale placeholders, not measured — same disclaimer as
+            # gateway.yaml/catalog-service.yaml's own resources blocks.
+            # Sized lighter than either: this is nginx serving a handful of
+            # static files, not a Python service doing JWT verification or
+            # DB work.
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ui-shell
+  namespace: ui-shell
+spec:
+  selector:
+    app: ui-shell
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# Own Ingress-facing cert, same platform-ca ClusterIssuer every other cert in
+# this repo uses — no new Issuer needed (see manifests/cluster-issuer.yaml).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ui-shell-ingress-tls
+  namespace: ui-shell
+spec:
+  secretName: ui-shell-ingress-tls
+  dnsNames:
+    - app.platform.local
+  issuerRef:
+    name: platform-ca
+    kind: ClusterIssuer
+---
+# app.platform.local — confirmed free when this was scoped (only
+# keycloak.platform.local/gateway.platform.local were claimed). No
+# backend-protocol annotation needed: same plain-HTTP-backend shape as
+# gateway's own Ingress.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ui-shell
+  namespace: ui-shell
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - app.platform.local
+      secretName: ui-shell-ingress-tls
+  rules:
+    - host: app.platform.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ui-shell
+                port:
+                  number: 8080

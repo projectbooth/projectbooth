@@ -1,0 +1,45 @@
+# emberstack/kubernetes-reflector — mirrors a Secret (or ConfigMap) from the
+# namespace it's created in into other namespaces automatically, and keeps it
+# in sync if the source changes. Added 2026-08-30 to solve a real, recurring
+# problem: Kubernetes Secrets are namespace-scoped, but platform-postgres
+# (postgres-operator/postgres-cluster.yaml) is a SHARED core service meant to
+# back multiple apps across multiple namespaces — Keycloak was the first to
+# hit this wall (its CR couldn't see CNPG's auto-generated secret because
+# that secret lives in the `postgres` namespace, not `keycloak`). See
+# docs/known-issues.md for the full story and the alternative that was
+# considered (just co-locate Postgres in the consuming app's namespace) —
+# rejected because it doesn't scale past a single consumer.
+#
+# Wave 0, alongside the rest of core infra: nothing strictly depends on
+# Reflector being up before it is (it's a continuously-running controller,
+# not a one-shot job — it mirrors whenever it's ready, regardless of when the
+# source Secret was created), but it belongs with the other foundational
+# pieces other core apps build on.
+#
+# Chart repo confirmed via https://github.com/emberstack/kubernetes-reflector
+# on 2026-08-30 — check for newer before a real install:
+# https://github.com/emberstack/kubernetes-reflector/releases
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: reflector
+  namespace: argocd
+  labels:
+    platform.io/tier: core
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: https://emberstack.github.io/helm-charts
+    chart: reflector
+    targetRevision: 10.0.65
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: reflector
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -1,0 +1,226 @@
+# catalog-lite itself — the FastAPI service in ../../catalog-service, over
+# the `catalog` database catalog-database.yaml provisions. Three resources:
+#
+#   - Job (catalog-service-migrate): runs `alembic upgrade head` using the
+#     SAME image the Deployment runs, just a different command (see
+#     ../../catalog-service/Dockerfile's own comment on why one image serves
+#     both roles). Tagged as an Argo CD PreSync hook so it runs and
+#     completes BEFORE this Application's Deployment is applied on every
+#     sync — the schema has to exist before the app that queries it starts.
+#     hook-delete-policy: BeforeHookCreation replaces the previous run's Job
+#     rather than erroring on "already exists" (Jobs are immutable) the way
+#     postgres-backup.yaml's bucket-creation Job instead relies on
+#     Replace=true for the same underlying reason, different mechanism
+#     because that one isn't ordering-sensitive relative to anything else.
+#   - Deployment: the API itself. 1 replica — same "fine for homelab
+#     bring-up" reasoning as postgres-cluster.yaml's instances: 1.
+#   - Service: ClusterIP only, deliberately not reachable off-cluster yet.
+#     See docs/known-issues.md's "catalog-service's auth is a placeholder"
+#     entry — nothing sits in front of this to verify a caller's identity
+#     until platform-gateway exists, so there's no Ingress here on purpose.
+#
+# Image: ghcr.io/dougallpercival/catalog-service:dev — hardcoded, not
+# templated, same "self-referencing apps" reasoning as repoURL/targetRevision
+# elsewhere in this repo (see README.md) — if you fork this repo and modify
+# catalog-service's code, point this at your own build instead (and see
+# .github/workflows/ci.yml's own comment on why it's lowercase specifically).
+# Tagged :dev to match every self-referencing manifest in this repo current-
+# ly pulling from the `dev` branch — bump this alongside those if/when this
+# repo does its first real dev->test->main promotion.
+#
+# imagePullPolicy: Always is NOT optional here the way it would be for an
+# immutable version tag — :dev is a moving tag (CI overwrites what it points
+# at on every merge to dev), so IfNotPresent would happily keep running
+# whatever was cached on first pull forever, silently ignoring every
+# subsequent push. Force an actual re-pull on every rollout instead.
+#
+# One expected gotcha on a FRESH catalog-service Application sync, same
+# shape as the Keycloak cross-namespace secret race documented in
+# docs/known-issues.md: this Application's CreateNamespace=true creates the
+# `catalog-service` namespace as part of THIS sync, and Reflector (which
+# mirrors platform-postgres-catalog-credentials in from `postgres`) only
+# starts mirroring into it once it exists — so the Job/Deployment below can
+# briefly sit in CreateContainerConfigError ("secret not found") on the
+# very first sync, before Reflector catches up. Self-heals within seconds,
+# same as Keycloak's did — not a bug, don't chase it if you see it once.
+#
+# The PGHOST/.../PGPASSWORD env block below is repeated verbatim in the Job
+# and the Deployment rather than factored out with a YAML anchor — tried
+# that first, and a `&anchor`/`*alias` pair does NOT work across a `---`
+# document boundary (each document in a multi-doc YAML stream gets its own
+# anchor namespace; PyYAML confirmed this fails with "found undefined
+# alias" when actually tested, not just a style preference). Five lines
+# duplicated twice is less surprising than an anchor that silently can't do
+# what it looks like it does.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: catalog-service-migrate
+  namespace: catalog-service
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: ghcr.io/dougallpercival/catalog-service:dev
+          imagePullPolicy: Always
+          command: ["alembic", "upgrade", "head"]
+          env:
+            - name: PGHOST
+              value: platform-postgres-rw.postgres.svc.cluster.local
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: catalog
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: platform-postgres-catalog-credentials
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: platform-postgres-catalog-credentials
+                  key: password
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog-service
+  namespace: catalog-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: catalog-service
+  template:
+    metadata:
+      labels:
+        app: catalog-service
+      # Bumped to the real commit SHA by ci.yml's build-and-push job after every push-triggered
+      # image build (.github/scripts/set-git-sha-annotation.sh) — a placeholder until then. Closes
+      # docs/known-issues.md's stale-pod gotcha: this repo's `:dev` tag is a moving target, so
+      # Synced/Healthy alone never proves a new image is actually running. Changing THIS value
+      # changes the pod template, which is what actually makes Kubernetes roll new pods — exactly
+      # what `kubectl rollout restart` does by patching a similar annotation, just automatic and
+      # with a value you can compare against a commit instead of a bare timestamp.
+      annotations:
+        platform.io/git-sha: "f0c7f1d3e9d1e4c6821333f9736e62c4f7acf49e"
+    spec:
+      containers:
+        - name: catalog-service
+          image: ghcr.io/dougallpercival/catalog-service:dev
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          env:
+            - name: PGHOST
+              value: platform-postgres-rw.postgres.svc.cluster.local
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: catalog
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: platform-postgres-catalog-credentials
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: platform-postgres-catalog-credentials
+                  key: password
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            # Homelab-scale placeholders, not measured — adjust once you
+            # know this service's real usage. Requests are what keeps a
+            # small node from starving it under Spark/Dask pressure later
+            # (ARCHITECTURE.md §7's node-taint reasoning is about compute
+            # pods specifically, but the same "don't let something big
+            # crowd out something small" logic applies here).
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: catalog-service
+  namespace: catalog-service
+spec:
+  selector:
+    app: catalog-service
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+# Closes the network-layer half of docs/known-issues.md's "catalog-service's
+# auth was a placeholder" entry (2026-09-03, catalog-service-netpol branch).
+# platform-gateway-auth (2026-09-02) closed the *application-layer* gap —
+# gateway now verifies a real Keycloak JWT and derives X-Workspace/X-User/
+# X-Role itself, never trusting what a caller sends — but left this half
+# open: nothing stopped any other in-cluster pod from reaching this
+# Service's ClusterIP directly and forging those same three headers,
+# bypassing gateway entirely. This NetworkPolicy is that fix, exactly as
+# that known-issues.md entry already named it: ingress into these pods only
+# from pods in the `gateway` namespace (matched via the `kubernetes.io/
+# metadata.name` label every namespace gets automatically since k8s 1.21 —
+# nothing needs to explicitly label the `gateway` namespace for this to
+# work), restricted to the one port this Service actually exposes.
+#
+# Ingress-only on purpose (policyTypes omits Egress) — this closes exactly
+# "who can reach catalog-service," not catalog-service's own outbound
+# traffic to Postgres/DNS, which stays exactly as open as it was before.
+# k3s's bundled Network Policy controller (kube-router, alongside Flannel)
+# genuinely enforces NetworkPolicy objects on this cluster — confirmed in
+# known-issues.md already, not assumed here.
+#
+# Known risk, confirmed live rather than assumed: the readinessProbe/
+# livenessProbe above hit this same pod's port 8000 from the kubelet on its
+# own node, not from a pod in any namespace — so a namespaceSelector-only
+# rule might or might not let that traffic through depending on exactly how
+# kube-router implements the FORWARD-chain path for node-originated traffic.
+# If pods start failing readiness/liveness after this syncs, the fix is a
+# second `from` entry here, an ipBlock per cluster node's own IP as a /32
+# (from `kubectl get nodes -o wide`) — deliberately NOT a LAN-wide
+# 192.168.4.0/24 block, which would reopen this port to every device on the
+# home LAN, the exact over-broad shape this policy exists to avoid. See
+# docs/known-issues.md for what was actually needed once this deployed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: catalog-service-restrict-ingress
+  namespace: catalog-service
+spec:
+  podSelector:
+    matchLabels:
+      app: catalog-service
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gateway
+      ports:
+        - protocol: TCP
+          port: 8000

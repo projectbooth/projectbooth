@@ -1,0 +1,62 @@
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  text-decoration: none;
+  color: inherit;
+  background: light-dark(#f4f4f7, #1c1c22);
+}
+
+.item:hover {
+  background: light-dark(#e8e8ee, #26262e);
+}
+
+.name {
+  flex: 1;
+  font-weight: 500;
+}
+
+.status {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: light-dark(#e0e0e6, #333);
+  opacity: 0.85;
+}
+
+.status[data-status='Healthy'] {
+  background: light-dark(#d7f2df, #16351f);
+  color: light-dark(#1a7f37, #4fd67d);
+  opacity: 1;
+}
+
+.status[data-status='Degraded'] {
+  background: light-dark(#fbdcdc, #401a1a);
+  color: light-dark(#c92a2a, #ff8787);
+  opacity: 1;
+}
+
+.status[data-status='Progressing'] {
+  background: light-dark(#fdf0d5, #3a2f10);
+  color: light-dark(#a9720c, #f0b429);
+  opacity: 1;
+}
+
+.message {
+  opacity: 0.85;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}

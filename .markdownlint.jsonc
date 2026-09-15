@@ -1,0 +1,8 @@
+{
+  // Relaxed defaults for long-form architecture docs — tune as the docs settle.
+  "default": true,
+  "MD013": false,       // line length — architecture prose runs long on purpose
+  "MD033": false,       // inline HTML — allowed (tables/badges later)
+  "MD024": { "siblings_only": true }, // allow repeated headings like "### Ingest" across use-case sections
+  "MD041": false        // first line doesn't have to be a top-level heading (front-matter etc.)
+}

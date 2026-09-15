@@ -1,0 +1,41 @@
+# Longhorn — replicated block storage across nodes (ARCHITECTURE.md §6/§8).
+# Prerequisite on each node that will host storage: open-iscsi (or iscsi-initiator-utils)
+# installed and the iscsid service running — bootstrap/install.sh installs and enables
+# this automatically when Longhorn is enabled (best-effort, non-fatal; --skip-iscsi to
+# opt out of just that part).
+#
+# This whole app is optional (2026-08-31) — only synced at all when install.sh is run
+# with --enable-longhorn (see src/core/argocd/optional/storage-longhorn-app.yaml and
+# README.md's "Portability" section). Default is off: single-node testing is fine on
+# k3s's built-in local-path-provisioner, and any environment with cloud block storage
+# (EKS/GKE/AKS, or self-managed k8s on cloud VMs) doesn't need replicated local storage
+# at all — CloudNativePG's Cluster leaves storage.storageClass unset so it picks up
+# whichever default StorageClass exists either way.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: storage-longhorn
+  namespace: argocd
+  labels:
+    platform.io/tier: optional
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: https://charts.longhorn.io
+    chart: longhorn
+    targetRevision: 1.7.2   # check for newer: https://github.com/longhorn/longhorn/releases
+    helm:
+      values: |
+        defaultSettings:
+          defaultReplicaCount: 2   # bump toward node count as the cluster grows
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: longhorn-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

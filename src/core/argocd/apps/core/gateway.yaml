@@ -1,0 +1,41 @@
+# platform-gateway itself — see manifests/gateway.yaml for the full design
+# writeup (why only the ca.crt key is mounted, why no Ingress yet, what's
+# still deferred).
+#
+# Wave 4, one after catalog-service (wave 3) — purely for Argo CD UI
+# legibility (avoids a redundant simultaneous-wave Degraded flash while
+# catalog-service's own PreSync migration Job is still running). NOT a real
+# dependency: a Service simply doesn't route anywhere until its backend has
+# endpoints, so gateway and catalog-service could in principle sync in the
+# same wave with no functional difference — this one wave of separation is
+# cosmetic, not something to "fix" later if it ever looks redundant.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gateway
+  namespace: argocd
+  labels:
+    platform.io/tier: core
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: default
+  # Hardcoded, not __REPO_URL__/__REVISION__ — see README.md ("Self-referencing
+  # apps") for why: install.sh's placeholder substitution only ever touches
+  # root-app.yaml, never the files under apps/, which Argo CD reads straight
+  # from git with no templating of its own.
+  source:
+    repoURL: git@github.com:DougallPercival/opendataplatform.git
+    targetRevision: dev
+    path: src/core/argocd/manifests
+    directory:
+      include: "gateway.yaml"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gateway
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

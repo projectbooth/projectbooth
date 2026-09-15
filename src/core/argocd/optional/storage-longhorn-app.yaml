@@ -1,0 +1,48 @@
+# Optional-capability root Application — only applied by bootstrap/install.sh
+# when Longhorn is explicitly wanted (default: no; opt in with
+# --enable-longhorn). Points at src/core/argocd/apps/optional/storage-longhorn/,
+# the same way root-app.yaml points at apps/core/. See
+# src/core/argocd/README.md's "Portability: core vs. optional capabilities"
+# section for why this exists as a separate root Application instead of just
+# living inside apps/core/.
+#
+# When this capability is needed: an environment with no cloud block storage
+# underneath k8s — a homelab or self-hosted data centre where you want
+# replicated storage across your own nodes' local disks. Leave it off
+# anywhere durable/replicated storage already exists via the cluster's
+# default StorageClass — cloud block storage (EBS/PD/Azure Disk) on a
+# self-managed cloud-VM cluster or a managed service like EKS/GKE/AKS.
+# CloudNativePG's Cluster (manifests/postgres-cluster.yaml) deliberately
+# leaves storage.storageClass unset for exactly this reason — it always uses
+# whatever the cluster's default StorageClass is, Longhorn or not.
+#
+# install.sh substitutes __REPO_URL__ / __REVISION__ before applying this,
+# same as root-app.yaml. When this flag is on, install.sh also installs/enables
+# iscsid (Longhorn's host prerequisite) — see bootstrap/install.sh and
+# docs/known-issues.md.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: optional-storage-longhorn
+  namespace: argocd
+  labels:
+    platform.io/tier: optional
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: __REPO_URL__
+    targetRevision: __REVISION__
+    path: src/core/argocd/apps/optional/storage-longhorn
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

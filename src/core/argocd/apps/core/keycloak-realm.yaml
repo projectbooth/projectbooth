@@ -1,0 +1,43 @@
+# Seeds the workspace-group model into the running Keycloak instance — see
+# src/core/auth/realm-platform.yaml for the actual KeycloakRealmImport
+# resource and the full design writeup.
+#
+# Wave 3: needs the `Keycloak` CR (keycloak-instance.yaml, wave 2) not just
+# applied but actually running, since the operator performs this import via
+# a Job against Keycloak's live admin API. Same caveat noted on
+# keycloak-instance.yaml applies here too — Argo CD's wave gate doesn't
+# deeply health-check a custom operator's CRD, so "applied" isn't the same
+# as "ready for the import Job to succeed." If this Application shows
+# Degraded/Progressing right after a fresh install, that's expected while
+# Keycloak itself is still starting; selfHeal retries. If it's still stuck
+# once Keycloak is confirmed healthy, check the import Job directly:
+# `kubectl -n keycloak get jobs -l app=platform-realm` (or similar operator-
+# generated label) and its pod's logs.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: keycloak-realm
+  namespace: argocd
+  labels:
+    platform.io/tier: core
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: default
+  # Hardcoded, not __REPO_URL__/__REVISION__ — see README.md ("Self-referencing
+  # apps") for why: install.sh's placeholder substitution only ever touches
+  # root-app.yaml, never the files under apps/, which Argo CD reads straight
+  # from git with no templating of its own.
+  source:
+    repoURL: git@github.com:DougallPercival/opendataplatform.git
+    targetRevision: dev
+    path: src/core/auth
+    directory:
+      include: "realm-platform.yaml"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: keycloak
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

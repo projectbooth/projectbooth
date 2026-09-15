@@ -1,0 +1,44 @@
+# Optional-capability root Application — only applied by bootstrap/install.sh
+# unless SeaweedFS is explicitly not wanted (default: deployed; opt out with
+# --skip-seaweedfs). Points at src/core/argocd/apps/optional/storage-seaweedfs/,
+# the same way root-app.yaml points at apps/core/. See
+# src/core/argocd/README.md's "Portability: core vs. optional capabilities"
+# section for why this exists as a separate root Application instead of just
+# living inside apps/core/.
+#
+# When this capability is needed: any environment with no real S3-compatible
+# object storage already available — a homelab, a self-hosted data centre, or
+# bare k3s/k8s on VMs where nothing else provides this. Skip it
+# (--skip-seaweedfs) anywhere real object storage already exists — actual
+# cloud S3/R2/B2/etc. — and point postgres-backup.yaml's ObjectStore at that
+# instead (--s3-endpoint plus credentials via env vars at install time; see
+# install.sh --help).
+#
+# install.sh substitutes __REPO_URL__ / __REVISION__ before applying this,
+# same as root-app.yaml.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: optional-storage-seaweedfs
+  namespace: argocd
+  labels:
+    platform.io/tier: optional
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: __REPO_URL__
+    targetRevision: __REVISION__
+    path: src/core/argocd/apps/optional/storage-seaweedfs
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

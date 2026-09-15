@@ -1,0 +1,22 @@
+# The one real, deliberately trivial module built this branch (platform-module-lifecycle,
+# 2026-09-03) — proves docs/architecture/module-lifecycle-plan.md's "Recommended first slice"
+# end to end: `platform module install hello-module` should turn this file into a running nginx
+# pod, landed on a `compute`-role node specifically (not control/storage — see `placement` below,
+# ARCHITECTURE.md §7), with one PVC an operator can later exercise `--purge-data` against. It
+# doesn't serve anything real — see src/charts/hello-module/'s own README-style header comment.
+id: hello-module
+displayName: Hello Module
+icon: puzzle
+navPath: /hello-module
+proxyTo: http://hello-module.hello-module.svc:80
+healthCheck: /
+requires: []
+optional: true
+namespace: hello-module
+placement:
+  role: compute
+  tolerations:
+    - key: platform.io/role
+      operator: Equal
+      value: compute
+      effect: NoSchedule

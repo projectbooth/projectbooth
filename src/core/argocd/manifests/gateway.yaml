@@ -1,0 +1,347 @@
+# platform-gateway — verifies Keycloak JWTs, proxies to catalog-service with
+# gateway-derived X-Workspace/X-User/X-Role headers. See ../../gateway/README.md
+# for what's built vs. still deferred — this is NOT yet the full
+# ARCHITECTURE.md §3 gateway (no nav aggregation, Add-ons page API, or
+# module registry; those need ui-shell/a second module to exist first).
+#
+# Image: ghcr.io/dougallpercival/gateway:dev — hardcoded, not templated,
+# same "self-referencing apps" convention as catalog-service.yaml (see that
+# file's own comment, and argocd/README.md's "Self-referencing apps"
+# section) — fork this repo and modify gateway's code, point this at your
+# own build instead. imagePullPolicy: Always for the same reason
+# catalog-service.yaml gives: :dev is a moving tag, not an immutable version.
+#
+# TLS to Keycloak: mounts ONLY the `ca.crt` key of platform-ca-secret
+# (Reflector-mirrors into this namespace via cluster-issuer.yaml's
+# secretTemplate annotations, 2026-09-02) — deliberately NOT the whole
+# Secret, which also carries tls.key: platform-ca-secret's private key is
+# what cert-manager uses to sign every certificate this cluster issues, and
+# gateway has no reason to ever hold it. `items:` below is what limits the
+# mount to just the one file gateway actually needs. keycloak-tls's
+# Certificate (keycloak-instance.yaml) got the matching SAN addition, same
+# date, so gateway can verify Keycloak's cert when connecting directly to
+# its in-cluster Service DNS name — no port-forward, unlike the CLI-side
+# Keycloak tooling (see platform_sdk/_keycloak_connection.py's docstring for
+# why that trick is CLI-only, never reused here).
+#
+# Ingress: added 2026-09-02 (platform-ingress branch, see the bottom of this
+# file) — gateway.platform.local now replaces the manual
+# `kubectl port-forward -n gateway svc/gateway 8080:8080` that used to be the
+# only way to reach gateway from off-cluster; `platform_sdk`'s gateway_url
+# default follows suit (see platform_sdk/config.py).
+#
+# RBAC: added 2026-09-03 (platform-module-deps branch) — this repo's FIRST
+# ServiceAccount/Role/RoleBinding anywhere (everything before this ran as
+# the implicit `default` ServiceAccount with no RBAC at all, this
+# Deployment included, per the comment this replaces). GET
+# /modules/check-requirements (app/modules.py, app/argocd.py) needs to list
+# Argo CD `Application` objects to know which modules are actually
+# installed and healthy — the `gateway` ServiceAccount below is bound to a
+# `Role` scoped to exactly that: `get`/`list`/`watch` on
+# `applications.argoproj.io`, in the `argocd` namespace only, no other
+# resource types, no cluster-wide scope.
+#
+# Broadened 2026-09-10 (feature/force-cleanup branch) — added the `delete`
+# verb so POST /modules/{id}/force-cleanup (app/modules.py) can call
+# app/argocd.py's delete_module_application() to close the modules-root
+# prune gap (see docs/known-issues.md): a plain Kubernetes API DELETE
+# against the same Application object, using this same ServiceAccount
+# token, in place of the `kubectl delete application <id>` workaround. This
+# is deliberately NOT a separate Argo CD-native REST API credential — one
+# fewer credential shape, and the delete triggers the same
+# resources-finalizer.argocd.argoproj.io cascade either way. See
+# argocd/README.md for the same note in one place other manifests point to.
+# No new env vars needed: app/config.py's k8s_api_url/k8s_sa_token_path/
+# k8s_sa_ca_path/argocd_namespace defaults already match what a real
+# Deployment gets for free once serviceAccountName is set (the standard
+# projected-token/CA mount, and the real in-cluster API server address) —
+# nothing here to override, unlike Keycloak/catalog-service's URLs above,
+# which point at services outside the automatic ServiceAccount projection.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+      # Bumped to the real commit SHA by ci.yml's build-and-push-gateway job after every push-
+      # triggered image build (.github/scripts/set-git-sha-annotation.sh) — a placeholder until
+      # then. Closes docs/known-issues.md's stale-pod gotcha: this repo's `:dev` tag is a moving
+      # target, so Synced/Healthy alone never proves a new image is actually running. Changing
+      # THIS value changes the pod template, which is what actually makes Kubernetes roll new
+      # pods — exactly what `kubectl rollout restart` does by patching a similar annotation, just
+      # automatic and with a value you can compare against a commit instead of a bare timestamp.
+      annotations:
+        platform.io/git-sha: "6340ffcef26e48c7df3b9bbb7bbfacb824fac32c"
+    spec:
+      serviceAccountName: gateway
+      containers:
+        - name: gateway
+          image: ghcr.io/dougallpercival/gateway:dev
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          env:
+            - name: GATEWAY_KEYCLOAK_INTERNAL_URL
+              value: https://platform-service.keycloak.svc.cluster.local:8443
+            - name: GATEWAY_KEYCLOAK_PUBLIC_URL
+              # No port (2026-09-02, platform-ingress branch) — this used to
+              # carry an interim ":18444" suffix matching
+              # keycloak-instance.yaml's now-removed hostname-port pin (see
+              # that file's additionalOptions comment for the full "why" of
+              # the port that used to be here). Now that a real Ingress
+              # fronts Keycloak on the standard 443 port with
+              # proxy-headers: xforwarded telling it to generate port-free
+              # URLs, this has to match that: gateway's own issuer check
+              # (expected_issuer) compares this value's host+path against
+              # every token's `iss` claim verbatim, so a mismatched port (or
+              # a missing one, if Keycloak were still reflecting 8443) fails
+              # every request with "Invalid issuer" — confirm live the first
+              # time this deploys behind the real Ingress.
+              value: https://keycloak.platform.local
+            - name: GATEWAY_KEYCLOAK_REALM
+              value: platform
+            - name: GATEWAY_KEYCLOAK_CA_PATH
+              value: /etc/gateway/keycloak-ca/ca.crt
+            - name: GATEWAY_CATALOG_SERVICE_URL
+              value: http://catalog-service.catalog-service.svc.cluster.local:8000
+            - name: GATEWAY_CORS_ORIGINS
+              # feature/gateway-cors-ui-shell (2026-09-08), ui-shell-plan.md
+              # item 2 — ui-shell kept its own Ingress host
+              # (manifests/ui-shell.yaml) rather than gateway growing a
+              # second proxy target, so this is real cross-origin traffic
+              # in production, not just a local-dev convenience (see
+              # gateway/.env.example's own comment on this setting). Must
+              # match ui-shell.yaml's Ingress exactly, including the https
+              # scheme — its Certificate terminates TLS there.
+              value: https://app.platform.local
+            - name: GATEWAY_GITHUB_TOKEN
+              # ui-shell-plan.md item 7's mutation mechanism (feature/gateway-module-lifecycle-
+              # dispatch, 2026-09-10) — app/github_dispatch.py's trigger_module_workflow(). A
+              # fine-grained GitHub PAT scoped to Actions: read/write on this repo ONLY (no
+              # Contents permission — the actual git commit/push happens inside the triggered
+              # workflow, using its own ephemeral GITHUB_TOKEN, never this value). This repo's
+              # FIRST real SealedSecret (see the bottom of this file) — sealed-secrets has been
+              # deployed since day one (apps/core/sealed-secrets.yaml) but never actually used
+              # until now. Generate the PAT on GitHub, then run
+              # bootstrap/seal-gateway-github-token.sh to produce the real encryptedData below —
+              # see that script and gateway/README.md for the exact steps; this repo, as
+              # committed, never carries a real plaintext or working ciphertext for this value.
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-github-token
+                  key: token
+            - name: GATEWAY_MODULE_PROXY_TOKEN_SECRET
+              # ui-shell-plan.md item 8 (feature/module-proxy, 2026-09-10) — app/module_proxy.py's
+              # short-lived, module-scoped proxy tokens (the ?token= an embedded iframe uses instead
+              # of an Authorization header — see that file's own module docstring for the full "why").
+              # An HS256 signing secret gateway both mints AND verifies itself, NOT an external
+              # credential like GATEWAY_GITHUB_TOKEN above — nothing outside gateway ever needs to
+              # know it. This repo's SECOND SealedSecret (see the bottom of this file); generate the
+              # real value with `bootstrap/seal-gateway-module-proxy-secret.sh`, which GENERATES it
+              # (`openssl rand -hex 32`) rather than prompting for one the way
+              # seal-gateway-github-token.sh does — there's no PAT to go create first.
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-module-proxy-secret
+                  key: secret
+          volumeMounts:
+            - name: keycloak-ca
+              mountPath: /etc/gateway/keycloak-ca
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            # Homelab-scale placeholders, not measured — same disclaimer as
+            # catalog-service.yaml's own resources block; adjust once real
+            # usage is known.
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: keycloak-ca
+          secret:
+            secretName: platform-ca-secret
+            items:
+              - key: ca.crt
+                path: ca.crt
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: gateway
+spec:
+  selector:
+    app: gateway
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# The repo's first ServiceAccount/Role/RoleBinding — see the RBAC comment on
+# the Deployment above for the full "why," including the 2026-09-10 `delete`
+# broadening. ServiceAccount lives in gateway's own namespace (where the pod
+# runs); the Role/RoleBinding live in `argocd` (where the Applications
+# actually are) — a Role only grants access within its own namespace, so
+# this can't be a single object spanning both.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gateway
+  namespace: gateway
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gateway-module-applications
+  namespace: argocd
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gateway-module-applications
+  namespace: argocd
+subjects:
+  - kind: ServiceAccount
+    name: gateway
+    namespace: gateway
+roleRef:
+  kind: Role
+  name: gateway-module-applications
+  apiGroup: rbac.authorization.k8s.io
+---
+# gateway's own Ingress-facing cert (2026-09-02, platform-ingress branch) —
+# unlike keycloak-instance.yaml's Ingress, which reuses keycloak-tls
+# (already covers keycloak.platform.local, already lives in the right
+# namespace), gateway has never had a Certificate of its own: its Service
+# has never spoken TLS, only plain HTTP inside the cluster. Off the same
+# platform-ca ClusterIssuer as every other cert in this repo, so it's
+# trusted the same way once platform-ca is imported (see
+# manifests/cluster-issuer.yaml).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gateway-ingress-tls
+  namespace: gateway
+spec:
+  secretName: gateway-ingress-tls
+  dnsNames:
+    - gateway.platform.local
+  issuerRef:
+    name: platform-ca
+    kind: ClusterIssuer
+---
+# The Ingress itself — what actually makes gateway.platform.local reachable
+# off-cluster, replacing the manual port-forward this file's own top
+# comment used to describe. No backend-protocol annotation needed (unlike
+# keycloak-instance.yaml's Ingress): gateway's Service has only ever spoken
+# plain HTTP, an in-cluster-only hop at the same trust level as gateway's
+# own connection to catalog-service — nginx's default HTTP backend is
+# exactly right here. Shares ingress-nginx's one controller/LoadBalancer IP
+# with keycloak-instance.yaml's Ingress via a second host rule, not a
+# second front door — see that Ingress's own comment for why this has to be
+# a separate object rather than one Ingress spanning both hostnames
+# (namespace-scoped backend Service rule).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gateway
+  namespace: gateway
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - gateway.platform.local
+      secretName: gateway-ingress-tls
+  rules:
+    - host: gateway.platform.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  number: 8080
+---
+# This repo's FIRST real SealedSecret — see the Deployment's GATEWAY_GITHUB_TOKEN comment above for
+# the full "why" (ui-shell-plan.md item 7's mutation mechanism). sealed-secrets (apps/core/
+# sealed-secrets.yaml, wave 0) has been deployed since day one but never actually had anything
+# sealed with it until now.
+#
+# `encryptedData.token` below is a PLACEHOLDER, not a working ciphertext — kubeseal encrypts
+# asymmetrically against a specific cluster's own public key, so nothing produced outside your real
+# `homelab-dev` cluster can ever decrypt correctly there. Generate the real value with
+# `bootstrap/seal-gateway-github-token.sh` (prompts for the PAT interactively, fetches your
+# cluster's real sealed-secrets public cert via `kubeseal --fetch-cert`, and overwrites this
+# document with the real encryptedData) — see that script and gateway/README.md's "GitHub PAT for
+# the module-lifecycle dispatch" section for the exact GitHub PAT scope to create first
+# (fine-grained, this repo only, Actions: read and write, no other permission).
+#
+# Same file/Application as everything above (apps/core/gateway.yaml's `directory.include:
+# "gateway.yaml"` already scopes to this one file) — no new Application needed, matching how this
+# file already carries the Deployment/Service/RBAC/Certificate/Ingress together.
+---
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: gateway-github-token
+  namespace: gateway
+spec:
+  encryptedData:
+    token: AgA7irK70ZCSl1lbTHuIobN22F8SMwmYZdmoH2u6gvuqcgQLoLLiGvkQc7SzIf+R9YhUKBz1fv75pUVRe2/9jAugO7C5/V3vpIQ11c+LWS7G7G+Bg5On6dn/9FzzGa0ofJMbA6Q2pYIxQ7gLvEAx4tBOttvLcoNanlAb+fibGZ1ybruE29u8tH5MNBRYHNqGTgN4r0qj0GQZomwU2C7uxr93J+mIMNae1TqBl8o4/Jj/ooPnGzSVsgfwGVp3QBFiwG45emdORIaLg5ybhVm5okirI7S1ob705gOJqHofFoY+SEwHnBsL6Kic7koD29V6NnhPGlUemZkoll6nPAp1Uzo82YjpqNGxMcF2QYbUDZtsE6iIptnoFIyve9avJ6rwjok2yEu1m62KbdIY0O14mixsw1lZIrwEaBZSi+HQTAivPWL5hlQE+kXc1Kv/RFFK/Hz2gU5N3L+lruvM71AREJgDu4nnxqApSZ0g14gg8boTIj1P4B7eNp3cUUsvyu/OKYxyr9otcgB5HOurz4GL3ufBQV7iSL2UOMsiLM7LHNzs8B83m2Bs+Do49DZLNKMLhCGQsO2rXi0amPFh1qkm4vheGfmBnk+aZhXx+vBwzdx1+b3tZlwiNu9HOFNLP0rA8FC538gGAEjY3+miDr8MS3BIQ5/+fbHgPAaq2PCDfhHkVZMTdQHdFhmwrPurt1d6WGthGDJxKnuTCbKezH6e9Bc9iiHB7fsgHI69iB9+cGsm27Xz2EjBd8qLlx+i14BhwK0yGVZ1c8zBnmIKy+qh0vi9vJltbcEXPPsIBYBL+g1KPOcOXf5WCR2TEFLjZTg=
+  template:
+    metadata:
+      name: gateway-github-token
+      namespace: gateway
+---
+# This repo's SECOND SealedSecret — see the Deployment's GATEWAY_MODULE_PROXY_TOKEN_SECRET comment
+# above for the full "why" (ui-shell-plan.md item 8). Unlike gateway-github-token above, there's no
+# external credential to go generate first: this is a random signing secret gateway mints and verifies
+# entirely itself, so `bootstrap/seal-gateway-module-proxy-secret.sh` GENERATES the plaintext
+# (`openssl rand -hex 32`) rather than prompting for one.
+#
+# `encryptedData.secret` below is a PLACEHOLDER, not a working ciphertext — same reasoning as
+# gateway-github-token's own placeholder comment: kubeseal encrypts asymmetrically against a specific
+# cluster's own public key, so nothing produced outside your real `homelab-dev` cluster can ever
+# decrypt correctly there. Run `bootstrap/seal-gateway-module-proxy-secret.sh` to produce the real
+# encryptedData.
+---
+---
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: gateway-module-proxy-secret
+  namespace: gateway
+spec:
+  encryptedData:
+    secret: AgCkJBFtscq58cQVXcFfmi/jlOoFxAn+ICVivpeUR/sztr3QSSJ4cyrhR0y6bJ/IWujHPzHfXR6rF84zrCZydHa9fMDT6pSrxQ9sFVf0nrgdkTyBOtUCJrSLA6XG5nDNbwM4LElFeFmpOu2lWsAb82XqlvGaY0KALNGt3QTOUPnDUseyRr3Y9i+aY47k9o2MTxd+Ib83wCM0VwcMVeedDxINU+1A3y1MxpwMJoz0uQZThFJTm7z2tUApo0YCQm3NGKElT/Q7l0BraDifoWE9EnsS5zR/jASvQUYM42NlMSiJvt9dU2VKVs94azKvTkwu2iUIGXWwiNqKxRjfRXE0ue6f4DM6CTjx6fXis/1A/VEp31Sc1ZPCwdO5CsjHdJJPeLObNrQUNnUiZU2I/Yphg8nZEFhxN0B3+LvrK9R76bLx7UXTBxi2fF6R5HZXJS5TND3+hlBnIj1/lvaqUyFgwrmcdMxmvvhn0B0oU6KPHg5o49N7AfVaZl45EgAvJpRtjh/xS2f4sUY8HbXpVXajtKaalo3Q2qDZCyeAlB6WBQGaHrKzL25eyNrVXP8afksojP6AtR579G8Rm5WhY1Y+dX+D+zpEW/vs3U0gQv18zcFb6q/YaOx0nht+6ytwzfz55O817Wlhy/AE32Z1QTpKfP+sqH+Gq+SILQhnbtKl05e2Zhm+cdN5PcDfznRjDxE+hI5Q36ySOUdDOSYlIgoD9AVJLmtubH4QrfMPXhGxfYSkGLPzudaeVQeaIKHCc84+1XKH7DiakA71zAITJwZJ9vIp
+  template:
+    metadata:
+      name: gateway-module-proxy-secret
+      namespace: gateway

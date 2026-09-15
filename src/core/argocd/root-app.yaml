@@ -1,0 +1,41 @@
+# The ONE thing bootstrap/install.sh always applies by hand (with kubectl).
+# Everything else Argo CD manages from here — this Application watches
+# src/core/argocd/apps/core/ and turns every Application manifest it finds
+# there into a running piece of core. install.sh substitutes
+# __REPO_URL__ / __REVISION__ before applying this.
+#
+# Portability (2026-08-31): apps/core/ is only the environment-agnostic half
+# of the platform — pieces that work identically on a homelab box, a
+# self-hosted data centre, cloud VMs you run k8s on yourself, or a managed
+# service like EKS/GKE/AKS. Pieces that only make sense on SOME of those
+# (MetalLB, Longhorn) live in apps/optional/<capability>/ instead, and are
+# each pointed at by their own small root Application in optional/ — applied
+# by install.sh only when that capability's flag says to. See
+# src/core/argocd/README.md's "Portability: core vs. optional capabilities"
+# section for the full design and src/core/argocd/optional/ for those files.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+  labels:
+    platform.io/tier: core
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: __REPO_URL__
+    targetRevision: __REVISION__
+    path: src/core/argocd/apps/core
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

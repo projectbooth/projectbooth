@@ -1,0 +1,30 @@
+# Keycloak now recommends the Operator over a Helm chart (Bitnami's chart is
+# behind the Aug 2025 catalog paywall, and the community codecentric chart isn't
+# the project's own guidance anymore) — https://www.keycloak.org/operator/installation.
+# This installs the operator + its CRDs via the project's own Kustomize base.
+# The actual Keycloak instance is a separate Application (keycloak-instance.yaml,
+# wave 2) that creates a `Keycloak` custom resource once these CRDs exist.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: keycloak-operator
+  namespace: argocd
+  labels:
+    platform.io/tier: core
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/keycloak/keycloak-k8s-resources
+    targetRevision: 26.7.2   # check for newer: https://github.com/keycloak/keycloak-k8s-resources/releases — keep in step with the Keycloak CR's image tag below
+    path: kubernetes
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: keycloak
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

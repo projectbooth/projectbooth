@@ -1,0 +1,262 @@
+# Closes the "Not wired up yet: WAL archiving to MinIO" TODO that's been
+# sitting in postgres-cluster.yaml since Phase 0 — MinIO's Community Edition
+# was archived upstream Feb 13, 2026 (see docs/known-issues.md and
+# ARCHITECTURE.md §2), so this repo uses SeaweedFS instead
+# (apps/optional/storage-seaweedfs/) as the in-cluster S3-compatible object
+# store, or a real external S3-compatible endpoint if --skip-seaweedfs was
+# used at install time. Whichever it is, this file is what actually points
+# Postgres's backups at it.
+#
+# TODO before this goes healthy — same class of "values specific to your
+# environment" as manifests/metallb-pool.yaml's CIDR or cluster-issuer.yaml's
+# ACME email, not a bug:
+#   1. Confirm the real Service name/port SeaweedFS's S3 gateway landed on —
+#      `kubectl -n storage-seaweedfs get svc` once apps/optional/storage-seaweedfs
+#      has synced — and update `endpointURL` below to match if it differs from
+#      the placeholder. (Skip this if you used --skip-seaweedfs — endpointURL
+#      should already be your real external S3-compatible endpoint in that
+#      case; bootstrap/install.sh doesn't template this file, see its own
+#      comments on why.)
+#   2. Nothing else needs editing — bucket name, credentials, and region are
+#      already wired to what install.sh generates/asks for.
+#
+# Four resources — two from the Barman Cloud plugin's CRD (see
+# plugin-barman-cloud.yaml), plus two plain Kubernetes resources:
+#   - ObjectStore: where backups go. Referenced by postgres-cluster.yaml's
+#     spec.plugins (continuous WAL archiving) AND by the ScheduledBackup below
+#     (periodic full base backups) — ARCHITECTURE.md §8's "not just nightly
+#     snapshots" backup story, now actually wired up.
+#   - ScheduledBackup: barman-cloud does WAL archiving continuously once the
+#     Cluster references the plugin, but a periodic full base backup still
+#     needs its own schedule — this is that schedule (daily at 02:00). NOTE:
+#     if this is a fresh cluster, read docs/known-issues.md's "CNPG's
+#     operator only discovers the Barman Cloud plugin at its own startup"
+#     entry BEFORE assuming a failed first run means something's wrong here —
+#     it's an unrelated, one-time, already-documented gotcha.
+#   - Job (platform-postgres-backup-bucket): the bucket itself needs to exist
+#     before barman-cloud's first write — CNPG's own docs are explicit that
+#     it does NOT create the bucket for you. Idempotent (checks before
+#     creating) and retries for a while in case it runs before SeaweedFS's S3
+#     gateway is actually up yet — same "eventual consistency, don't assume
+#     perfect ordering across separate Argo CD app-of-apps trees" reasoning
+#     as keycloak-realm.yaml's own comments. Safe to re-run (Argo CD won't
+#     re-trigger it on every sync once it's completed, only if this manifest
+#     itself changes).
+#   - CronJob (platform-postgres-backup-offsite-mirror): weekly `rclone sync`
+#     of the backup bucket to wherever you want a copy that survives this
+#     node dying outright — ARCHITECTURE.md §8's "on-cluster redundancy alone
+#     doesn't survive a fire, theft, or a bad rm" point, and the reason this
+#     matters MORE than it sounds like on a single-node homelab: SeaweedFS
+#     and Postgres are likely on the same box, so a dead node takes the live
+#     database AND its on-cluster backup copy together. Same "install the
+#     tool, but a real destination needs your actual credentials, not
+#     scripted" philosophy as bootstrap/snapshot-setup.sh's rclone wiring —
+#     deliberately NOT wired up by install.sh. Does nothing (exits clean,
+#     not an error) until you create its destination Secret by hand:
+#
+#       rclone config   # set up your destination remote interactively, if you haven't already —
+#                        # the same remote bootstrap/snapshot-setup.sh's --rclone-remote uses works fine here too
+#       kubectl -n postgres create secret generic platform-offsite-rclone-config \
+#         --from-file=rclone.conf=$HOME/.config/rclone/rclone.conf \
+#         --from-literal=destination="<your-remote-name>:<bucket-or-path>"
+#
+#     Whatever's in ~/.config/rclone/rclone.conf after `rclone config` gets
+#     used as-is — every remote you've defined, not just the one you're
+#     about to use — so create a purpose-specific remote first if you'd
+#     rather this Secret not carry credentials for things unrelated to it.
+#
+#     Fixed 2026-09-12, live-verified against a real off-cluster SFTP destination: the source
+#     SeaweedFS S3 side is now defined as a named remote ("srcs3") entirely via RCLONE_CONFIG_*
+#     env vars on the mirror container below, not inlined into the `rclone sync` command's own
+#     connection-string syntax the way it originally was. The original inline form —
+#     ":s3,...,endpoint=http://host:8333:bucket" — broke in practice: that syntax uses ":" to
+#     separate the trailing path from the options, and the endpoint value's own "http://" and
+#     ":8333" collide with that delimiter, so rclone truncated the endpoint down to the literal
+#     string "http" and failed with "resolve endpoint: endpoint rule error, Custom endpoint
+#     `http` was not a valid URI" on every real attempt. Env-var-defined remotes have no such
+#     ambiguity — this is the same idea as the bucket-creation Job's own AWS_* env vars above,
+#     just rclone's equivalent of it.
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: platform-postgres-backup-store
+  namespace: postgres
+spec:
+  configuration:
+    destinationPath: "s3://platform-postgres-backups/"
+    endpointURL: "http://storage-seaweedfs-s3.storage-seaweedfs.svc.cluster.local:8333"   # TODO: confirm — see header
+    s3Credentials:
+      accessKeyId:
+        name: platform-s3-credentials
+        key: ACCESS_KEY_ID
+      secretAccessKey:
+        name: platform-s3-credentials
+        key: ACCESS_SECRET_KEY
+      region:
+        name: platform-s3-credentials
+        key: REGION
+    wal:
+      compression: gzip
+      maxParallel: 2
+    data:
+      compression: gzip
+  retentionPolicy: "30d"
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: platform-postgres-daily
+  namespace: postgres
+spec:
+  schedule: "0 0 2 * * *"   # six-field (includes seconds): daily at 02:00
+  backupOwnerReference: self
+  cluster:
+    name: platform-postgres
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
+  immediate: true    # also take one right away, don't wait for the first 02:00
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: platform-postgres-backup-bucket
+  namespace: postgres
+  annotations:
+    # Re-run if this manifest changes (e.g. bucket name), not on every sync —
+    # Jobs are immutable once created, so a plain re-apply of an unchanged
+    # Job is a no-op; this just makes an intentional edit here take effect
+    # instead of silently applying to a field Kubernetes then rejects.
+    argocd.argoproj.io/sync-options: Replace=true
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: create-bucket
+          image: amazon/aws-cli:2.27.0   # check for newer: https://github.com/aws/aws-cli/releases — pinned since this is generic tooling, not project-specific
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: platform-s3-credentials
+                  key: ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: platform-s3-credentials
+                  key: ACCESS_SECRET_KEY
+            - name: AWS_DEFAULT_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: platform-s3-credentials
+                  key: REGION
+            - name: S3_ENDPOINT
+              value: "http://storage-seaweedfs-s3.storage-seaweedfs.svc.cluster.local:8333"   # TODO: keep in sync with the ObjectStore's endpointURL above
+            - name: BUCKET
+              value: "platform-postgres-backups"
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              echo "Waiting for ${S3_ENDPOINT} to accept connections (up to 10 minutes — normal on a fresh install while SeaweedFS is still starting)..."
+              for i in $(seq 1 60); do
+                if aws --endpoint-url="${S3_ENDPOINT}" s3 ls >/dev/null 2>&1; then
+                  echo "S3 endpoint reachable."
+                  break
+                fi
+                if [[ "$i" -eq 60 ]]; then
+                  echo "Gave up waiting for ${S3_ENDPOINT} after 10 minutes." >&2
+                  exit 1
+                fi
+                sleep 10
+              done
+              if aws --endpoint-url="${S3_ENDPOINT}" s3api head-bucket --bucket "${BUCKET}" 2>/dev/null; then
+                echo "Bucket ${BUCKET} already exists."
+              else
+                echo "Creating bucket ${BUCKET}..."
+                aws --endpoint-url="${S3_ENDPOINT}" s3 mb "s3://${BUCKET}"
+              fi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: platform-postgres-backup-offsite-mirror
+  namespace: postgres
+spec:
+  schedule: "0 3 * * 0"   # weekly, Sunday 03:00 — the backup bucket itself already gets fresh
+                           # base backups daily (see the ScheduledBackup above); this is the
+                           # slower-moving "get a copy somewhere else entirely" layer on top
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          volumes:
+            - name: offsite-config
+              secret:
+                secretName: platform-offsite-rclone-config
+                optional: true   # this CronJob is meant to exist and do nothing until you create this Secret by hand — see the header comment above
+          containers:
+            - name: mirror
+              image: rclone/rclone:1.68   # check for newer: https://github.com/rclone/rclone/releases
+              volumeMounts:
+                - name: offsite-config
+                  mountPath: /offsite-config
+                  readOnly: true
+              env:
+                # Source SeaweedFS S3 side, defined as a named remote called "srcs3" purely via
+                # env vars — see the header comment's "Fixed 2026-09-12" note for why this isn't
+                # inlined into the sync command below as a connection string anymore.
+                - name: RCLONE_CONFIG_SRCS3_TYPE
+                  value: "s3"
+                - name: RCLONE_CONFIG_SRCS3_PROVIDER
+                  value: "Other"
+                - name: RCLONE_CONFIG_SRCS3_ENV_AUTH
+                  value: "false"
+                - name: RCLONE_CONFIG_SRCS3_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: platform-s3-credentials
+                      key: ACCESS_KEY_ID
+                - name: RCLONE_CONFIG_SRCS3_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: platform-s3-credentials
+                      key: ACCESS_SECRET_KEY
+                - name: RCLONE_CONFIG_SRCS3_REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: platform-s3-credentials
+                      key: REGION
+                - name: RCLONE_CONFIG_SRCS3_ENDPOINT
+                  value: "http://storage-seaweedfs-s3.storage-seaweedfs.svc.cluster.local:8333"   # TODO: keep in sync with the ObjectStore's endpointURL above
+                - name: BUCKET
+                  value: "platform-postgres-backups"
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  if [ ! -f /offsite-config/rclone.conf ]; then
+                    echo "platform-offsite-rclone-config Secret doesn't exist yet — nothing to mirror to. This is expected until you set one up (see this file's own header comment). Exiting clean, not an error."
+                    exit 0
+                  fi
+                  DEST="$(cat /offsite-config/destination 2>/dev/null || true)"
+                  if [ -z "$DEST" ]; then
+                    echo "platform-offsite-rclone-config exists but its 'destination' key is empty — nothing to mirror to. Exiting clean, not an error."
+                    exit 0
+                  fi
+                  export RCLONE_CONFIG=/offsite-config/rclone.conf
+                  echo "Mirroring s3://${BUCKET} (in-cluster SeaweedFS) -> ${DEST} ..."
+                  rclone sync \
+                    "srcs3:${BUCKET}" \
+                    "${DEST}" \
+                    --create-empty-src-dirs=false
+                  echo "Done."

@@ -1,0 +1,64 @@
+# Self-signed by default — works with zero external dependencies, which matters
+# for a cluster that might be sitting behind NAT with no public DNS. Browsers
+# will warn on the untrusted cert; that's expected for an internal platform.
+#
+# Decision (2026-08-30): staying on self-signed for now — no public domain for
+# this cluster yet, and not worth importing platform-ca (below) into every
+# device's trust store while this is still solo/testing. Revisit either of
+# these when that changes:
+#   - Import once, no more warnings: `platform-ca` below is a real CA
+#     generated from this self-signed root — grab platform-ca-secret and
+#     import it into your OS/browser trust store, and every cert this
+#     cluster issues off platform-ca is trusted with no per-service warnings.
+#   - Real public domain later: swap to a Let's Encrypt ClusterIssuer
+#     (DNS-01 challenge — HTTP-01 needs the cluster reachable from the
+#     internet, which a homelab usually isn't). cert-manager's own docs
+#     have the exact block for your DNS provider:
+#     https://cert-manager.io/docs/configuration/acme/
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: self-signed
+spec:
+  selfSigned: {}
+---
+# A CA generated FROM the self-signed issuer above, so every other cert this
+# cluster issues shares one root — import that one root into your browser/OS
+# trust store once, instead of clicking through warnings per-service.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: platform-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: platform-ca
+  secretName: platform-ca-secret
+  # secretTemplate (not a bare annotation on the Secret) because cert-manager
+  # owns/reconciles this Secret's metadata from the Certificate spec — an
+  # annotation added by hand (or by a one-off kubectl annotate, the pattern
+  # bootstrap/install.sh uses for the OTHER Reflector-mirrored secrets) would
+  # get silently dropped on the next renewal. This is the declarative,
+  # survives-renewal equivalent, added 2026-09-02 so platform-ca-secret mirrors
+  # into gateway's namespace: platform-gateway needs the CA to verify
+  # Keycloak's cert when it connects over the in-cluster Service DNS name
+  # (see keycloak-instance.yaml's keycloak-tls Certificate for the matching
+  # SAN addition) rather than the port-forward+--resolve trick the CLI-side
+  # tooling uses (see platform_sdk/_keycloak_connection.py's docstring for why
+  # that trick isn't safe to reuse in a long-running service).
+  secretTemplate:
+    annotations:
+      reflector.v1.k8s.emberstack.com/reflection-allowed: "true"
+      reflector.v1.k8s.emberstack.com/reflection-auto-enabled: "true"
+      reflector.v1.k8s.emberstack.com/reflection-auto-namespaces: "gateway"
+  issuerRef:
+    name: self-signed
+    kind: ClusterIssuer
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: platform-ca
+spec:
+  ca:
+    secretName: platform-ca-secret

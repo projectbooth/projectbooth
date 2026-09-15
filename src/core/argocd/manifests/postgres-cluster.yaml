@@ -1,0 +1,90 @@
+# Single instance for now — fine for homelab bring-up and for what Keycloak
+# needs on day one. Bump `instances: 3` once this matters enough to want HA
+# (odd number, same reasoning as the k3s control-plane note in ARCHITECTURE.md
+# §12's DR discussion).
+#
+# storage.storageClass is left unset on purpose: CNPG will use the cluster's
+# default StorageClass, whatever that is on this environment — Longhorn once
+# apps/optional/storage-longhorn/storage.yaml is applied and healthy (see
+# README.md's "Portability" section — --enable-longhorn), a cloud block-storage
+# CSI driver's default class on EKS/GKE/AKS/etc., or k3s's built-in
+# local-path-provisioner if you're testing single-node with neither. Set it
+# explicitly if you want to be sure which one this cluster actually uses.
+#
+# bootstrap.initdb still has NO secret: field — CNPG still auto-generates its
+# own "platform-postgres-app" Secret at initdb time to create the `keycloak`
+# role/database, and that's fine; it's just not what anything actually reads
+# credentials from anymore (see managed.roles below). Left as-is rather than
+# removed because there's no way to bootstrap a role/database pair without
+# SOME credential, and this one now gets immediately superseded.
+#
+# managed.roles takes over the `keycloak` role's password on an ongoing basis
+# from platform-postgres-keycloak-credentials — a Secret bootstrap/install.sh
+# creates once (idempotently; never committed to git) IN THIS `postgres`
+# namespace. Added 2026-08-30: CNPG's auto-generated secret is namespace-
+# scoped to `postgres`, but Keycloak's CR lives in the `keycloak` namespace
+# and Kubernetes Secrets can't cross namespaces — Keycloak's pod sat in
+# CreateContainerConfigError the whole time ("secret platform-postgres-app
+# not found") because of this. apps/reflector.yaml mirrors this Secret into
+# `keycloak` (and any future consuming namespace) automatically — see that
+# file and docs/known-issues.md for the full story. managed.roles reconciles
+# the role's actual password to match the Secret going forward regardless of
+# how the role was originally created, so this works whether the cluster is
+# brand new or (like this one) already past its initial bootstrap.
+#
+# spec.plugins below wires up WAL archiving + scheduled backups (ARCHITECTURE.md
+# §8's actual backup story, added 2026-08-31) — see postgres-backup.yaml for
+# the ObjectStore it points at and postgres-backup-plugin.yaml for the plugin
+# itself. Originally going to be MinIO (per ARCHITECTURE.md's original text);
+# swapped for SeaweedFS before ever being built — MinIO's Community Edition
+# was archived upstream Feb 13, 2026, see docs/known-issues.md.
+#
+# managed.roles' `catalog` entry (added 2026-09-01, Phase 2 kickoff) is the
+# same pattern as `keycloak` one line down: a role whose password is
+# reconciled on an ongoing basis from a Secret bootstrap/install.sh generates
+# once (platform-postgres-catalog-credentials, this `postgres` namespace,
+# never committed), mirrored into `catalog-service` by Reflector. The
+# `catalog` DATABASE itself (owned by this role) is declared separately —
+# see catalog-database.yaml, using CNPG's Database CRD rather than a
+# CREATE-DATABASE Job, since bootstrap.initdb only ever runs once per
+# Cluster and this operator (1.30) has had declarative Database support
+# since 1.24.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: platform-postgres
+  namespace: postgres
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie   # confirmed current default for CNPG 1.30 — check for newer before a real install
+  storage:
+    size: 10Gi
+  bootstrap:
+    initdb:
+      database: keycloak
+      owner: keycloak
+  managed:
+    roles:
+      - name: keycloak
+        ensure: present
+        login: true
+        passwordSecret:
+          name: platform-postgres-keycloak-credentials
+      - name: catalog
+        ensure: present
+        login: true
+        passwordSecret:
+          name: platform-postgres-catalog-credentials
+  # Continuous WAL archiving to the ObjectStore in postgres-backup.yaml — the
+  # plugin itself (postgres-backup-plugin.yaml) has to be running for this to
+  # actually work, but the Cluster tolerates it not being ready yet the same
+  # way keycloak-instance.yaml tolerates Postgres not being ready yet:
+  # degraded/retrying until the dependency catches up, not a hard failure.
+  # Periodic full backups are a separate ScheduledBackup, also in
+  # postgres-backup.yaml — WAL archiving alone isn't a complete backup story,
+  # it needs a base backup to replay forward from.
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: platform-postgres-backup-store

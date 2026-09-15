@@ -1,0 +1,11 @@
+# hello-module — the one trivial test module for docs/architecture/module-lifecycle-plan.md's
+# "Recommended first slice" (platform-module-lifecycle branch, 2026-09-03). Stock nginx, no custom
+# content: the point is proving the reconciliation/placement/purge-data mechanisms actually work
+# end to end against a real cluster, not serving anything anyone would use. See
+# src/modules/hello-module/module.yaml for the descriptor `platform module install` reads to
+# generate this chart's Application manifest.
+apiVersion: v2
+name: hello-module
+description: Hello Module — the trivial end-to-end test module for the module-lifecycle system.
+version: 0.1.0
+appVersion: "1.0"

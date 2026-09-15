@@ -1,0 +1,24 @@
+# The per-module PVC-ownership convention docs/architecture/module-lifecycle-plan.md's "open
+# questions" left unresolved, settled here for v1 (PVC-only — bucket/schema ownership stays
+# deferred): every PVC a module chart creates carries `platform.io/module: <id>` (so
+# `platform module uninstall --purge-data` can find it later, per the kubectl command it prints —
+# see platform_cli/module.py) and `argocd.argoproj.io/sync-options: Delete=false` (Argo CD's own
+# resource-lifecycle hook) — the actual mechanism behind ARCHITECTURE.md §3's "by default this
+# leaves the module's PersistentVolumeClaims in place": a plain `uninstall` prunes the Application
+# and everything it owns EXCEPT resources carrying this annotation, so this PVC survives with no
+# extra logic anywhere in platform-cli.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "platform.fullname" . }}-data
+  labels:
+    app: {{ include "platform.fullname" . }}
+    platform.io/module: {{ .Chart.Name }}
+  annotations:
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.storage.size }}

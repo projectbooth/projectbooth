@@ -1,0 +1,36 @@
+# The `catalog` database — see manifests/catalog-database.yaml for the full
+# design writeup (why the Database CRD instead of a Job, retain policy).
+# Wave 2, same as postgres-backup: needs `platform-postgres` (wave 1) to
+# exist as something to reference, and its `catalog` role (postgres-cluster
+# .yaml's managed.roles, also wave 1) to exist before this can actually
+# succeed at CREATE DATABASE ... OWNER catalog. The Database CRD itself is
+# registered by postgres-operator at wave 0, so that part's already covered
+# by the time this applies.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: catalog-database
+  namespace: argocd
+  labels:
+    platform.io/tier: core
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  # Hardcoded, not __REPO_URL__/__REVISION__ — see README.md ("Self-referencing
+  # apps") for why: install.sh's placeholder substitution only ever touches
+  # root-app.yaml, never the files under apps/, which Argo CD reads straight
+  # from git with no templating of its own.
+  source:
+    repoURL: git@github.com:DougallPercival/opendataplatform.git
+    targetRevision: dev
+    path: src/core/argocd/manifests
+    directory:
+      include: "catalog-database.yaml"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: postgres
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

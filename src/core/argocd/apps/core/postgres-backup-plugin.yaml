@@ -1,0 +1,52 @@
+# Installs the Barman Cloud CNPG-I plugin (manifests/plugin-barman-cloud.yaml)
+# — see that file's own header for why this exists as a separate plugin
+# instead of the older in-tree backup field. Wave 1: needs cert-manager
+# (wave 0, for the plugin's self-signed mTLS certs) and the `cnpg-system`
+# namespace to already exist (created by postgres-operator.yaml, also wave 0).
+#
+# Core, not optional: unlike MetalLB/Longhorn, this doesn't assume anything
+# about what's underneath Kubernetes — it's just an operator sidecar that
+# knows how to talk to S3-compatible object storage, same shape everywhere.
+# What differs by environment is WHERE it points (manifests/postgres-backup.yaml's
+# ObjectStore), not whether this plugin itself is installed.
+#
+# One-time gotcha confirmed in testing (2026-09-01), not a bug in this repo:
+# the CNPG operator only enumerates available plugins at its OWN startup, not
+# continuously — postgres-operator being wave 0 and this being wave 1 means
+# the operator is reliably already running (and has already missed this
+# plugin) by the time it first appears. bootstrap/install.sh's final step
+# handles this automatically on a fresh bring-up (waits for this plugin,
+# then restarts the operator once) — the only case still needing the manual
+# fix is adding this to an already-running cluster whose operator has been
+# up a while, same as what happened during testing. See docs/known-issues.md
+# for the full writeup and that manual fix if you ever need it.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: postgres-backup-plugin
+  namespace: argocd
+  labels:
+    platform.io/tier: core
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  # Hardcoded, not __REPO_URL__/__REVISION__ — see README.md ("Self-referencing
+  # apps") for why: install.sh's placeholder substitution only ever touches
+  # root-app.yaml, never the files under apps/, which Argo CD reads straight
+  # from git with no templating of its own.
+  source:
+    repoURL: git@github.com:DougallPercival/opendataplatform.git
+    targetRevision: dev
+    path: src/core/argocd/manifests
+    directory:
+      include: "plugin-barman-cloud.yaml"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cnpg-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

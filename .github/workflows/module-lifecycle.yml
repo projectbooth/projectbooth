@@ -1,0 +1,95 @@
+# Triggered by gateway's POST /modules/{module_id}/install and .../uninstall
+# (src/core/gateway/app/github_dispatch.py) — ui-shell-plan.md item 7's mutation mechanism
+# (feature/gateway-module-lifecycle-dispatch, 2026-09-10). Gateway itself never holds a git-write
+# credential; it only ever asks the GitHub API to start THIS workflow (a fine-grained PAT scoped to
+# Actions: read/write only — see argocd/manifests/gateway.yaml's GATEWAY_GITHUB_TOKEN comment). The
+# actual git commit and push happen here, authenticated with this run's own ephemeral, auto-scoped
+# `GITHUB_TOKEN` — the same credential ci.yml already uses for GHCR pushes, just with `contents:
+# write` instead of `packages: write`.
+#
+# Deliberately its own workflow file, not a job folded into ci.yml: a different trigger shape
+# (workflow_dispatch vs. push/pull_request) and a different, more privileged permission
+# (contents: write) that nothing in ci.yml needs or should have — no reason for every ordinary
+# ci.yml run to even parse a job carrying that permission.
+#
+# Two git-plumbing wrinkles this workflow exists specifically to work around — see this branch's
+# plan for the full "why," summarized here since they're easy to silently regress:
+#   1. actions/checkout sets `origin` to the HTTPS form, not the SSH form every self-referencing
+#      Application (and Argo CD's own configured repo credential) expects — the install step below
+#      passes --repo-url explicitly rather than trusting `git remote get-url origin`
+#      (platform_cli/module.py).
+#   2. actions/checkout leaves a detached HEAD even for an explicit `ref:` — `git checkout -B`
+#      below puts this onto a real local branch tracking origin/dev BEFORE platform_cli/repo.py's
+#      commit_and_push runs its own plain `git push` with no refspec, which needs that upstream.
+name: Module lifecycle
+
+on:
+  workflow_dispatch:
+    inputs:
+      module_id:
+        description: "Module id (src/modules/<id>/module.yaml) — must already exist for install; must already be installed for uninstall."
+        required: true
+        type: string
+      action:
+        description: "What to do with module_id."
+        required: true
+        type: choice
+        options:
+          - install
+          - uninstall
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    name: ${{ inputs.action }} ${{ inputs.module_id }}
+    runs-on: ubuntu-latest
+    # Only this job, only this run — see this file's own top comment for why this can't be the
+    # workflow-level default the way ci.yml's `contents: read` is.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+
+      # Wrinkle #2 above: undoes actions/checkout's detached HEAD so the unmodified
+      # platform_cli/repo.py's `git push` (no refspec) has a real upstream to push to.
+      - name: Check out a real branch, not detached HEAD
+        run: git checkout -B dev
+
+      - name: Configure a commit identity
+        run: |
+          git config user.name "gateway-module-lifecycle-bot"
+          git config user.email "gateway-module-lifecycle-bot@users.noreply.github.com"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Same two-step platform-sdk-then-platform-cli install order every other job in ci.yml that
+      # needs platform-cli already uses (platform-cli depends on platform-sdk by name with no
+      # version pin — see that package's own pyproject.toml comment).
+      - name: Install platform-sdk (editable)
+        working-directory: src/platform-sdk
+        run: pip install -e .
+      - name: Install platform-cli (editable)
+        working-directory: src/platform-cli
+        run: pip install -e .
+
+      # Wrinkle #1 above: --repo-url overrides platform_cli/module.py's default
+      # `git remote get-url origin` discovery, which on this runner would otherwise pick up
+      # actions/checkout's HTTPS-form origin instead of the SSH form every other self-referencing
+      # Application (and Argo CD's own configured repo credential) actually uses.
+      - name: Install module
+        if: inputs.action == 'install'
+        run: >-
+          platform module install ${{ inputs.module_id }}
+          --repo-url git@github.com:DougallPercival/opendataplatform.git
+
+      # uninstall never calls render_application_manifest/discover_repo_url — it only deletes
+      # modules-enabled/<id>.yaml, so wrinkle #1 doesn't apply here.
+      - name: Uninstall module
+        if: inputs.action == 'uninstall'
+        run: platform module uninstall ${{ inputs.module_id }}

@@ -1,0 +1,39 @@
+# catalog-lite itself — see manifests/catalog-service.yaml for the full
+# design writeup (why a PreSync migration Job, why env is duplicated not
+# anchored, the first-sync Reflector race).
+#
+# Wave 3, alongside keycloak-realm: needs `catalog-database` (wave 2) to
+# have actually created the `catalog` database before the migration Job can
+# run `alembic upgrade head` against it, same "needs the previous wave's
+# thing to really exist, not just be applied" reasoning as everywhere else
+# wave-gating shows up in this file.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: catalog-service
+  namespace: argocd
+  labels:
+    platform.io/tier: core
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: default
+  # Hardcoded, not __REPO_URL__/__REVISION__ — see README.md ("Self-referencing
+  # apps") for why: install.sh's placeholder substitution only ever touches
+  # root-app.yaml, never the files under apps/, which Argo CD reads straight
+  # from git with no templating of its own.
+  source:
+    repoURL: git@github.com:DougallPercival/opendataplatform.git
+    targetRevision: dev
+    path: src/core/argocd/manifests
+    directory:
+      include: "catalog-service.yaml"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: catalog-service
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -1,0 +1,840 @@
+<title>Personal Data Platform</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+  :root{
+    --paper:#F3F4F0;
+    --paper-raised:#FFFFFF;
+    --ink:#1A1E1B;
+    --ink-soft:#4A524C;
+    --ink-faint:#818A83;
+    --line:#D9DCD4;
+    --line-strong:#C2C7BC;
+    --accent:#2B6C60;
+    --accent-ink:#F4FAF8;
+    --accent-soft:#E1EDE9;
+    --amber:#9C6A20;
+    --amber-soft:#F1E5D1;
+    --code-bg:#EAECE5;
+    --shadow:rgba(26,30,27,0.09);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#14181A;
+      --paper-raised:#1B2124;
+      --ink:#E7ECE8;
+      --ink-soft:#A3ACA5;
+      --ink-faint:#6F7871;
+      --line:#2A312C;
+      --line-strong:#3A433C;
+      --accent:#78C4B2;
+      --accent-ink:#0C1917;
+      --accent-soft:#1C2C29;
+      --amber:#D9A75A;
+      --amber-soft:#332815;
+      --code-bg:#101513;
+      --shadow:rgba(0,0,0,0.35);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#14181A;
+    --paper-raised:#1B2124;
+    --ink:#E7ECE8;
+    --ink-soft:#A3ACA5;
+    --ink-faint:#6F7871;
+    --line:#2A312C;
+    --line-strong:#3A433C;
+    --accent:#78C4B2;
+    --accent-ink:#0C1917;
+    --accent-soft:#1C2C29;
+    --amber:#D9A75A;
+    --amber-soft:#332815;
+    --code-bg:#101513;
+    --shadow:rgba(0,0,0,0.35);
+  }
+
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  @media (prefers-reduced-motion:reduce){ html{scroll-behavior:auto;} }
+
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:'IBM Plex Sans', -apple-system, 'Segoe UI', sans-serif;
+    font-size:16px;
+    line-height:1.6;
+  }
+
+  a{color:var(--accent);}
+  code, .mono{font-family:'IBM Plex Mono','SF Mono',Consolas,monospace; font-variant-numeric:tabular-nums;}
+
+  h1,h2,h3,h4{
+    font-family:'IBM Plex Serif', Georgia, 'Times New Roman', serif;
+    font-weight:600;
+    text-wrap:balance;
+    color:var(--ink);
+    margin:0;
+  }
+
+  /* ---------- shell layout ---------- */
+  .shell{
+    display:grid;
+    grid-template-columns:248px minmax(0,1fr);
+    max-width:1180px;
+    margin:0 auto;
+  }
+  .toc{
+    position:sticky;
+    top:0;
+    align-self:start;
+    height:100vh;
+    overflow-y:auto;
+    padding:2.75rem 1.25rem 2rem 2rem;
+    border-right:1px solid var(--line);
+  }
+  .toc-label{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:.68rem;
+    letter-spacing:.12em;
+    text-transform:uppercase;
+    color:var(--ink-faint);
+    margin:0 0 .9rem;
+  }
+  .toc ol{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:.15rem;}
+  .toc a{
+    display:block;
+    padding:.4rem .6rem;
+    border-radius:5px;
+    color:var(--ink-soft);
+    text-decoration:none;
+    font-size:.87rem;
+    border-left:2px solid transparent;
+  }
+  .toc a:hover{color:var(--ink); background:var(--paper-raised);}
+  .toc a.active{color:var(--accent); border-left-color:var(--accent); background:var(--accent-soft); font-weight:500;}
+  .toc .sub{padding-left:1.35rem; font-size:.81rem;}
+
+  main{padding:2.75rem 3rem 6rem; min-width:0;}
+
+  /* ---------- header ---------- */
+  .doc-head{max-width:66ch; margin-bottom:3.5rem;}
+  .eyebrow{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:.72rem;
+    letter-spacing:.14em;
+    text-transform:uppercase;
+    color:var(--accent);
+    margin:0 0 .9rem;
+  }
+  .doc-head h1{font-size:2.4rem; line-height:1.15; margin-bottom:1rem;}
+  .doc-head .dek{font-size:1.08rem; color:var(--ink-soft); max-width:60ch;}
+  .meta-row{
+    display:flex; gap:1.5rem; flex-wrap:wrap;
+    margin-top:1.5rem; padding-top:1.25rem; border-top:1px solid var(--line);
+    font-family:'IBM Plex Mono',monospace; font-size:.78rem; color:var(--ink-faint);
+  }
+  .meta-row b{color:var(--ink-soft); font-weight:500;}
+
+  section{max-width:74ch; margin-bottom:4.25rem; scroll-margin-top:2rem;}
+  section.wide{max-width:100%;}
+  .section-num{
+    font-family:'IBM Plex Mono',monospace; font-size:.78rem; color:var(--ink-faint);
+    display:block; margin-bottom:.4rem;
+  }
+  h2{font-size:1.55rem; margin-bottom:.9rem;}
+  h3{font-size:1.12rem; margin:1.6rem 0 .6rem;}
+  p{margin:0 0 1rem; color:var(--ink);}
+  p.lede{color:var(--ink-soft);}
+
+  /* ---------- principle cards ---------- */
+  .principles{
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr));
+    gap:1px; background:var(--line);
+    border:1px solid var(--line); border-radius:10px; overflow:hidden;
+    max-width:100%;
+  }
+  .principle{background:var(--paper-raised); padding:1.25rem 1.35rem;}
+  .principle .pn{font-family:'IBM Plex Mono',monospace; color:var(--accent); font-size:.78rem; display:block; margin-bottom:.5rem;}
+  .principle h4{font-size:.98rem; margin-bottom:.35rem;}
+  .principle p{font-size:.88rem; color:var(--ink-soft); margin:0;}
+
+  /* ---------- tags / chips ---------- */
+  .tag{
+    display:inline-flex; align-items:center; gap:.3rem;
+    font-family:'IBM Plex Mono',monospace; font-size:.68rem; letter-spacing:.03em;
+    padding:.15rem .5rem; border-radius:99px; white-space:nowrap;
+  }
+  .tag-core{background:var(--accent-soft); color:var(--accent);}
+  .tag-module{background:var(--amber-soft); color:var(--amber);}
+  .chips{display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.7rem;}
+  .chip{
+    font-family:'IBM Plex Mono',monospace; font-size:.76rem;
+    padding:.28rem .6rem; border-radius:6px; border:1px solid var(--line-strong);
+    background:var(--paper); color:var(--ink-soft);
+  }
+  .chip.core{border-color:transparent; background:var(--accent-soft); color:var(--accent);}
+  .chip.module{border-color:transparent; background:var(--amber-soft); color:var(--amber);}
+  .legend{display:flex; gap:1.25rem; align-items:center; font-size:.82rem; color:var(--ink-faint); margin-bottom:1.5rem;}
+  .legend span{display:inline-flex; align-items:center; gap:.4rem;}
+  .dot{width:.55rem; height:.55rem; border-radius:99px; display:inline-block;}
+  .dot.core{background:var(--accent);}
+  .dot.module{background:var(--amber);}
+
+  /* ---------- layer stack ---------- */
+  .shell-band{
+    background:linear-gradient(180deg, var(--accent-soft), var(--paper-raised));
+    border:1px solid var(--line-strong);
+    border-radius:12px 12px 0 0;
+    padding:1.3rem 1.5rem;
+    position:relative;
+  }
+  .shell-band h3{margin:.15rem 0 .35rem; font-size:1.05rem;}
+  .stack{display:flex; flex-direction:column-reverse; border:1px solid var(--line); border-top:none; border-radius:0 0 12px 12px; overflow:hidden;}
+  .layer{
+    background:var(--paper-raised);
+    padding:1.15rem 1.5rem;
+    border-top:1px solid var(--line);
+    display:grid;
+    grid-template-columns:2.6rem minmax(0,1fr);
+    gap:.15rem 1rem;
+  }
+  .layer:nth-child(odd){background:var(--paper);}
+  .layer-num{
+    font-family:'IBM Plex Mono',monospace; font-size:1.15rem; color:var(--ink-faint);
+    grid-row:1/3; align-self:start; padding-top:.1rem;
+  }
+  .layer h4{font-size:1.02rem; margin:0;}
+  .layer .layer-desc{grid-column:2; margin:.3rem 0 0; font-size:.9rem; color:var(--ink-soft);}
+  .layer .chips{grid-column:2;}
+
+  /* ---------- tables ---------- */
+  .table-wrap{overflow-x:auto; border:1px solid var(--line); border-radius:10px;}
+  table{border-collapse:collapse; width:100%; min-width:560px; font-size:.9rem;}
+  thead th{
+    text-align:left; font-family:'IBM Plex Mono',monospace; font-size:.72rem; letter-spacing:.06em; text-transform:uppercase;
+    color:var(--ink-faint); background:var(--paper); padding:.7rem .9rem; border-bottom:1px solid var(--line);
+  }
+  tbody td{padding:.75rem .9rem; border-bottom:1px solid var(--line); vertical-align:top; color:var(--ink-soft);}
+  tbody tr:last-child td{border-bottom:none;}
+  tbody td:first-child{color:var(--ink); font-weight:500;}
+  td.num, th.num{font-family:'IBM Plex Mono',monospace; font-variant-numeric:tabular-nums;}
+
+  /* ---------- code blocks ---------- */
+  pre{
+    background:var(--code-bg); border:1px solid var(--line); border-radius:10px;
+    padding:1.1rem 1.3rem; overflow-x:auto; font-size:.83rem; line-height:1.55;
+    color:var(--ink-soft);
+  }
+  pre code{color:inherit;}
+  .filecap{
+    font-family:'IBM Plex Mono',monospace; font-size:.72rem; color:var(--ink-faint);
+    margin-bottom:.4rem; display:block;
+  }
+
+  /* ---------- topology ---------- */
+  .nodes{display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:1rem;}
+  .node{
+    border:1px solid var(--line-strong); border-radius:10px; padding:1.1rem 1.2rem;
+    background:var(--paper-raised);
+  }
+  .node .node-role{font-family:'IBM Plex Mono',monospace; font-size:.68rem; letter-spacing:.06em; text-transform:uppercase; color:var(--accent); display:block; margin-bottom:.3rem;}
+  .node h4{font-size:1rem; margin-bottom:.6rem;}
+  .node ul{margin:0; padding-left:1.05rem; font-size:.85rem; color:var(--ink-soft);}
+  .node li{margin-bottom:.25rem;}
+
+  /* ---------- use cases ---------- */
+  .usecase{border:1px solid var(--line); border-radius:10px; padding:1.35rem 1.5rem; margin-bottom:1.2rem; background:var(--paper-raised);}
+  .usecase h4{font-size:1.05rem; margin-bottom:.3rem;}
+  .usecase .uc-what{font-size:.87rem; color:var(--ink-faint); margin-bottom:1rem;}
+  .flow{display:flex; flex-wrap:wrap; align-items:stretch; gap:0; margin-bottom:1rem;}
+  .flow-step{
+    flex:1 1 150px; background:var(--paper); border:1px solid var(--line); padding:.7rem .85rem;
+    font-size:.82rem;
+  }
+  .flow-step .fs-label{font-family:'IBM Plex Mono',monospace; font-size:.66rem; letter-spacing:.05em; text-transform:uppercase; color:var(--accent); display:block; margin-bottom:.3rem;}
+  .flow-step + .flow-step{border-left:none;}
+  .flow-step:first-child{border-radius:8px 0 0 8px;}
+  .flow-step:last-child{border-radius:0 8px 8px 0;}
+  .reuse-note{
+    font-size:.85rem; color:var(--ink-soft); background:var(--accent-soft); border-radius:8px;
+    padding:.65rem .9rem; margin-top:.2rem;
+  }
+  .reuse-note b{color:var(--accent);}
+
+  /* ---------- decisions ---------- */
+  .decision{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1.1rem; margin-bottom:1.4rem;}
+  .decision h4{font-size:1rem; margin-bottom:.3rem;}
+  .decision .picked{font-size:.85rem; margin-bottom:.35rem;}
+  .decision .picked b{color:var(--accent);}
+  .decision p{font-size:.9rem; color:var(--ink-soft); margin:0;}
+
+  footer{
+    max-width:66ch; padding-top:2rem; border-top:1px solid var(--line);
+    font-size:.85rem; color:var(--ink-faint);
+  }
+
+  @media (max-width:860px){
+    .shell{grid-template-columns:1fr;}
+    .toc{
+      position:sticky; top:0; height:auto; z-index:5;
+      background:var(--paper); border-right:none; border-bottom:1px solid var(--line);
+      padding:.9rem 1rem;
+    }
+    .toc-label{display:none;}
+    .toc ol{flex-direction:row; overflow-x:auto; gap:.3rem; padding-bottom:.2rem;}
+    .toc a{white-space:nowrap; border-left:none; border-bottom:2px solid transparent;}
+    .toc a.active{border-left-color:transparent; border-bottom-color:var(--accent);}
+    .toc .sub{display:none;}
+    main{padding:2rem 1.25rem 4rem;}
+    .doc-head h1{font-size:1.9rem;}
+    .layer{grid-template-columns:2rem minmax(0,1fr);}
+  }
+</style>
+
+<div class="shell">
+  <nav class="toc">
+    <p class="toc-label">On this page</p>
+    <ol>
+      <li><a href="#principles" data-toc>Principles</a></li>
+      <li><a href="#layers" data-toc>The stack</a></li>
+      <li><a href="#modularity" data-toc>How modules plug in</a></li>
+      <li><a href="#tenancy" data-toc>Tenancy &amp; isolation</a></li>
+      <li><a href="#scheduling" data-toc>Scheduling &amp; triggers</a></li>
+      <li><a href="#topology" data-toc>Cluster topology</a></li>
+      <li><a href="#placement" data-toc>Node placement &amp; scale</a></li>
+      <li><a href="#backup" data-toc>Backup &amp; disaster recovery</a></li>
+      <li><a href="#usecases" data-toc>Your three use cases</a></li>
+      <li><a href="#repo" data-toc>Repo layout</a></li>
+      <li><a href="#roadmap" data-toc>Build order</a></li>
+      <li><a href="#decisions" data-toc>Open calls</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <div class="doc-head">
+      <p class="eyebrow">Architecture · Draft</p>
+      <h1>A Databricks-shaped platform for three obsessions</h1>
+      <p class="dek">A modular data platform — stocks/news/reddit, in-season NFL, and Kaggle March Madness running through the same catalog, compute, and shared code. Runs on whatever k3s cluster you point it at: a machine on your own network today, cloud instances tomorrow, no assumption baked in about which. The tenancy model is load-bearing from day one so handing it to a small team later is an invite, not a rebuild.</p>
+      <div class="meta-row">
+        <span><b>Status</b> · living document, revisit as pieces get built</span>
+        <span><b>Last updated</b> · Aug 30, 2026</span>
+        <span><b>Target</b> · k3s, 2–4 nodes — home or cloud</span>
+        <span><b>Tenancy</b> · single-user default, multi-team ready</span>
+      </div>
+    </div>
+
+    <section id="principles">
+      <span class="section-num">§1</span>
+      <h2>Principles</h2>
+      <p class="lede">Five rules that keep "pick what you want, add more later" from turning into a pile of unrelated services.</p>
+      <div class="principles">
+        <div class="principle">
+          <span class="pn">01</span>
+          <h4>Core stays tiny</h4>
+          <p>Auth, catalog, gateway, and the UI shell are the only mandatory pieces. Everything else — Spark, Jupyter, Trino, dashboards — is opt-in.</p>
+        </div>
+        <div class="principle">
+          <span class="pn">02</span>
+          <h4>Metadata is the seam</h4>
+          <p>Modules don't call each other directly. They read and write the catalog. That's what lets you add or remove a piece without rewiring the rest.</p>
+        </div>
+        <div class="principle">
+          <span class="pn">03</span>
+          <h4>Compute is ephemeral</h4>
+          <p>Spark and Dask clusters spin up for a job and disappear. Nothing idles 24/7 just to exist — wasted power at home, a wasted bill on cloud.</p>
+        </div>
+        <div class="principle">
+          <span class="pn">04</span>
+          <h4>One identity, one door</h4>
+          <p>Keycloak SSO in front of every module. The shell's nav is the only URL you need to remember.</p>
+        </div>
+        <div class="principle">
+          <span class="pn">05</span>
+          <h4>Every module ships as a chart</h4>
+          <p><code>helm install</code>, register a manifest, appear in nav. Uninstall it and core doesn't notice.</p>
+        </div>
+        <div class="principle">
+          <span class="pn">06</span>
+          <h4>Tenancy from day one</h4>
+          <p>Every catalog entry, namespace, and bucket prefix hangs off a workspace — even when there's only one of them.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="layers" class="wide">
+      <span class="section-num">§2</span>
+      <h2>The stack</h2>
+      <p class="lede" style="max-width:66ch">Seven layers, foundation at the bottom. The shell sits on top of all of them as the front door, not as a peer layer — it's what makes the rest feel like one platform instead of eight bookmarks.</p>
+      <div class="legend">
+        <span><span class="dot core"></span> core — install this first, it doesn't come out</span>
+        <span><span class="dot module"></span> module — opt in when a use case needs it</span>
+      </div>
+
+      <div class="shell-band">
+        <h3>Platform Shell</h3>
+        <p style="margin:0; font-size:.9rem; color:var(--ink-soft);">Unified nav built from module manifests, catalog browser, pipeline &amp; run status, deep-links into each module's own UI. <span class="tag tag-core">core</span></p>
+      </div>
+      <div class="stack">
+        <div class="layer">
+          <span class="layer-num">01</span>
+          <div>
+            <h4>Infrastructure</h4>
+            <p class="layer-desc">The boring bedrock everything else assumes exists — including the workspace/group model in Keycloak and the GitOps engine that installs everything above this layer. Get this reliable before anything else.</p>
+            <div class="chips">
+              <span class="chip core">k3s</span>
+              <span class="chip core">MetalLB</span>
+              <span class="chip core">ingress-nginx</span>
+              <span class="chip core">cert-manager</span>
+              <span class="chip core">Longhorn / NFS</span>
+              <span class="chip core">Keycloak (SSO)</span>
+              <span class="chip core">Argo CD</span>
+              <span class="chip core">sealed-secrets / Vault</span>
+              <span class="chip module">Prometheus + Grafana + Loki</span>
+            </div>
+          </div>
+        </div>
+        <div class="layer">
+          <span class="layer-num">02</span>
+          <div>
+            <h4>Storage</h4>
+            <p class="layer-desc">One object store as the lake, one relational store for anything transactional or small. Table format is optional until you actually need time travel or schema evolution.</p>
+            <div class="chips">
+              <span class="chip core">SeaweedFS (S3 API)</span>
+              <span class="chip core">Postgres — CloudNativePG</span>
+              <span class="chip module">Iceberg table format</span>
+              <span class="chip module">Redis (cache / queue)</span>
+            </div>
+            <p class="layer-desc" style="margin-top:0.5rem; font-size:0.85em; opacity:0.8;"><b>SeaweedFS, not MinIO</b> (updated 2026-08-31) — MinIO's Community Edition was archived upstream Feb 13, 2026, before this layer was ever built here. Same S3 API surface either way; see ARCHITECTURE.md's own note on this layer for the full story.</p>
+          </div>
+        </div>
+        <div class="layer">
+          <span class="layer-num">03</span>
+          <div>
+            <h4>Catalog &amp; Shared Code</h4>
+            <p class="layer-desc">The registry that makes datasets, functions, pipelines, and models discoverable — this is your Unity Catalog. Every entry carries a workspace + visibility flag, so "discoverable" can mean just you or the whole team. The shared-code repo is what stops you rewriting the same Reddit scraper three times.</p>
+            <div class="chips">
+              <span class="chip core">catalog-lite service</span>
+              <span class="chip core">platform-sdk (python pkg)</span>
+              <span class="chip core">platform-cli</span>
+              <span class="chip module">Gitea (or GitHub)</span>
+            </div>
+          </div>
+        </div>
+        <div class="layer">
+          <span class="layer-num">04</span>
+          <div>
+            <h4>Query &amp; Virtualization</h4>
+            <p class="layer-desc">Your Denodo analog — one SQL surface federated across Postgres, SeaweedFS/Iceberg, and anything else with a connector, without copying data around.</p>
+            <div class="chips">
+              <span class="chip module">Trino</span>
+              <span class="chip module">dbt (declarative SQL transforms)</span>
+            </div>
+          </div>
+        </div>
+        <div class="layer">
+          <span class="layer-num">05</span>
+          <div>
+            <h4>Orchestration</h4>
+            <p class="layer-desc">DAGs for ingestion, transforms, scoring. Asset-centric so a "pipeline" and a "catalog entry" are the same concept.</p>
+            <div class="chips">
+              <span class="chip module">Dagster</span>
+              <span class="chip module">Argo Workflows (k8s-native fallback)</span>
+            </div>
+          </div>
+        </div>
+        <div class="layer">
+          <span class="layer-num">06</span>
+          <div>
+            <h4>Compute</h4>
+            <p class="layer-desc">Spun up per job, torn down after. Spark when a job genuinely needs distributed shuffle; Dask/Ray when it's Python-native parallelism over pandas-shaped data — which, honestly, covers most of your three use cases.</p>
+            <div class="chips">
+              <span class="chip module">Spark — Kubernetes Operator</span>
+              <span class="chip module">Dask / Ray</span>
+            </div>
+          </div>
+        </div>
+        <div class="layer">
+          <span class="layer-num">07</span>
+          <div>
+            <h4>Analytical &amp; Serving</h4>
+            <p class="layer-desc">Where you actually look at things — notebooks for exploration, small apps for the "give me this week's bets" kind of UI, BI for everything else.</p>
+            <div class="chips">
+              <span class="chip module">JupyterHub</span>
+              <span class="chip module">Streamlit</span>
+              <span class="chip module">Superset</span>
+              <span class="chip module">MLflow (model registry)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="modularity" class="wide">
+      <span class="section-num">§3</span>
+      <h2>How modules plug in</h2>
+
+      <h3 style="margin-top:0">From clone to running platform</h3>
+      <p style="max-width:66ch">Two steps are unavoidably scripted — nothing exists yet to click on. <code>./bootstrap/install.sh</code> provisions k3s (or verifies an existing cluster) and applies <code>core/</code> as an Argo CD "app of apps": MetalLB, ingress-nginx, cert-manager, storage, Keycloak (seeding the <code>personal</code> workspace), secrets, and the platform services themselves. It prints the shell URL when it's done. You log in — and everything from there is a choice, not a script.</p>
+
+      <p style="max-width:66ch">Every module after that — JupyterHub, Trino, Dagster, Spark, whatever — turns on through <b>any of three doors, all converging on the same mechanism</b>. That's the direct answer to "config UI or manual install": both, and neither is the "real" way — they're front ends on the same path.</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Door</th><th>How</th><th>Best for</th></tr></thead>
+          <tbody>
+            <tr><td>Add-ons page, in the shell</td><td>Click "Install" on a module card</td><td>Point-and-click, no terminal needed</td></tr>
+            <tr><td><code>platform-cli</code></td><td><code>platform module install jupyterhub</code></td><td>Scripting, remote/headless boxes</td></tr>
+            <tr><td>Git, directly</td><td>Commit a file into <code>modules-enabled/</code></td><td>GitOps purists, code review on infra changes</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p style="margin-top:1rem; max-width:66ch">All three do the same thing underneath: write (or commit) the module's manifest into <code>modules-enabled/</code> — named the way nginx names <code>sites-enabled/</code>, deliberately, because the idea is identical. <code>modules/</code> holds every module the repo knows how to install; <code>modules-enabled/</code> holds only the ones <i>this</i> deployment actually turned on. Argo CD watches <code>modules-enabled/</code> and reconciles the cluster to match it, whether that file arrived by hand, by CLI, or by a UI click — so there's exactly one source of truth (git), and no "the UI thinks it's installed but the cluster disagrees" drift.</p>
+
+      <p style="max-width:66ch">The Add-ons page is thin by design: <b>platform-gateway</b> reads a static module index built from every <code>modules/*/module.yaml</code> at release time (so it can list modules that aren't installed yet, not just ones already running), overlays it with the live <code>PlatformModule</code> registrations it already watches for nav, and shows each module's state — Not installed / Installing / Healthy / Failed — by reading Argo CD's <code>Application</code> status. Clicking "Install" doesn't call Helm directly; it commits the manifest and lets Argo CD reconcile it, which is what keeps the UI and the CLI from becoming two code paths that quietly drift apart. A module that declares <code>requires: [trino]</code> and isn't satisfied shows a disabled button with why, in the UI, and a clear error from the CLI — the dependency check lives once, at the API layer both doors call through.</p>
+
+      <span class="filecap">modules/notebook-jupyterhub/module.yaml</span>
+      <pre><code>id: notebook-jupyterhub
+displayName: Notebooks
+icon: notebook
+navPath: /notebooks
+proxyTo: http://jupyterhub.jupyterhub.svc:80
+healthCheck: /hub/health
+requires:
+  - auth        # registers a Keycloak OIDC client on install
+  - catalog     # notebooks can pull dataset refs via platform-sdk
+optional: true</code></pre>
+      <p style="margin-top:1rem; max-width:66ch">Decorators in <code>platform-sdk</code> (<code>@platform.dataset</code>, <code>@platform.pipeline</code>, <code>@platform.function</code>) are the equivalent self-registration mechanism for <i>code</i> rather than infrastructure — how a function or a table gets into the catalog without a separate manual step, once its module is running.</p>
+
+      <h3>Building a new module</h3>
+      <p style="max-width:66ch">This is the one part that's still genuinely hands-on, and should be: <code>platform-cli module scaffold &lt;name&gt;</code> generates the <code>modules/&lt;name&gt;/</code> skeleton (chart + <code>module.yaml</code>) from the Phase 7 template, you write the actual service, and once it's committed to <code>modules/</code>, it shows up on the Add-ons page like any built-in module. Installing it stops being a coding problem and goes back to being a one-click problem — building it is the only step nobody can automate for you.</p>
+
+      <h3>Tearing it all down</h3>
+      <p style="max-width:66ch">Testing this on a cluster you intend to destroy afterward — a cloud VM set spun up just to validate a release, or a box you want back to bare metal — needs the exact inverse of every install path, not just "delete the manifests and hope":</p>
+      <ul style="max-width:66ch; padding-left:1.2rem; color:var(--ink-soft); font-size:.95rem; line-height:1.7;">
+        <li><code>platform module uninstall &lt;name&gt;</code> is the CLI mirror of install: removes the manifest from <code>modules-enabled/</code>, Argo CD prunes the release. By default this leaves the module's PersistentVolumeClaims in place, so reinstalling gets its data back — pass <code>--purge-data</code> to also drop its PVCs and the workspace bucket prefixes/schemas it owned. The Add-ons page offers the same two actions, not one: Remove, and Remove &amp; delete data — the second asks you to type the module's name to confirm, because there's no undo.</li>
+        <li><code>bootstrap/teardown.sh</code> is the mirror of <code>install.sh</code>: uninstalls every module in <code>modules-enabled/</code> (data purged, since the goal is a clean slate), removes core, removes Argo CD, then runs k3s's own <code>k3s-uninstall.sh</code> — the machine ends up exactly where it was before <code>install.sh</code> ever ran, whether that machine is a spare box at home or a cloud VM. What it deliberately doesn't touch is the compute itself: on hardware you own, that's a machine you still have; on a cloud VM, reclaiming cost means terminating the instance, one layer above this script.</li>
+        <li>For cloud test clusters specifically, provision them through a minimal Terraform (or equivalent) module that spins the VMs up <i>and</i> tears them down — pairing <code>terraform apply</code> with <code>bootstrap/install.sh</code>, and <code>terraform destroy</code> as the last step regardless of whether <code>teardown.sh</code> ran first. A full test cycle then costs exactly as long as the test took, and nothing lingers to show up on a bill.</li>
+      </ul>
+    </section>
+
+    <section id="tenancy">
+      <span class="section-num">§4</span>
+      <h2>Tenancy &amp; isolation</h2>
+      <p>The unit of ownership everywhere in this platform is the <b>workspace</b>, not the user. A single-user install provisions exactly one — <code>personal</code> — and you never see the concept again. A team install provisions one per project or team, and the same primitives that kept your NFL data separate from your March Madness scratch space now keep two people's data separate from each other.</p>
+      <p>A workspace is a label that four other systems key off of, so isolation is enforced by infrastructure that already isolates things, not by application code bolted on after the fact:</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Workspace maps to</th><th>Gives you</th></tr></thead>
+          <tbody>
+            <tr><td>Keycloak group</td><td>Membership + role (owner / editor / viewer), enforced by SSO everywhere, not per-app</td></tr>
+            <tr><td>k8s namespace</td><td>Resource quotas, network policy, RBAC — a runaway Spark job in one workspace can't starve another</td></tr>
+            <tr><td>SeaweedFS bucket prefix</td><td><code>s3://lake/&lt;workspace&gt;/...</code> with bucket policy scoped per prefix</td></tr>
+            <tr><td>Postgres schema</td><td><code>&lt;workspace&gt;.*</code> tables, one database role per workspace</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p style="margin-top:1rem">The catalog carries a <code>workspace_id</code> and a visibility flag (<code>private</code> / <code>workspace</code> / <code>public</code>) on every dataset, function, pipeline, and model — that's the whole mechanism for "my Reddit sentiment tweak is mine, but the platform-sdk connector everyone uses is public." JupyterHub already spawns per-user pods natively; the addition is a KubeSpawner profile list keyed to workspace membership, so a notebook launches with the right storage mounts and quota without anyone picking anything by hand. Dagster's code locations get the same treatment — a workspace's pipelines are their own code location, visible to its members, not one shared blob of DAGs.</p>
+
+      <p>What this buys a solo user: nothing, on purpose — one workspace, one owner, no extra screen to click through. What it buys later: inviting someone is <code>platform workspace invite alice --role editor</code>, not a schema migration.</p>
+
+      <h3>Publishing code to the catalog</h3>
+      <p>A function decorated with <code>@platform.function(name=..., visibility=...)</code> registers into catalog-lite with an owner workspace, a version bumped on each <code>platform-cli publish</code>, an extracted signature/docstring, and lineage — which pipelines call it, which datasets it reads or writes. The catalog stores that metadata, not the code itself: the code stays in <code>platform-sdk</code>/git, so the catalog is a discovery and governance layer on top of it, not a package host. <code>visibility: public</code> makes a function callable and browsable from every workspace on your deployment without membership in the workspace that owns it — <code>platform-cli function promote &lt;name&gt; --public</code> is the one-line way to do that. Editing rights stay with the owning workspace regardless of visibility: "public" means readable by everyone else, not writable.</p>
+      <p>That's public <i>within your instance</i>. A different question — publishing a function so someone else's separate installation of this platform could pull it in, the way <code>pip install</code> reaches PyPI — isn't in scope for the MVP, but it's worth designing for now rather than retrofitting later. See §12 for that as an explicit deferred decision.</p>
+    </section>
+
+    <section id="scheduling">
+      <span class="section-num">§5</span>
+      <h2>Scheduling &amp; triggers</h2>
+      <p>Every one of your three use cases has a different rhythm — stocks want to run continuously, NFL wants a weekly cadence, March Madness wants to run once, fast, on demand. Dagster (§2, layer 5) covers all three with its built-in primitives, so scheduling isn't a separate system bolted on top of orchestration — it's a property of how a pipeline is defined.</p>
+      <div class="principles" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));">
+        <div class="principle">
+          <h4>Cron schedules</h4>
+          <p>A <code>ScheduleDefinition</code> on a job: stocks ingestion runs nightly after market close; the NFL pull runs every Tuesday morning once the prior week's games are final.</p>
+        </div>
+        <div class="principle">
+          <h4>Sensors</h4>
+          <p>Event-driven, not time-driven: an asset sensor fires the stocks transform the moment a new file lands in <code>bronze/stocks/</code>. A freshness policy can flag a dataset that hasn't updated when it should have.</p>
+        </div>
+        <div class="principle">
+          <h4>Manual &amp; backfill runs</h4>
+          <p>March Madness is triggered by hand when the Kaggle dataset drops. Partitioned assets (NFL by week, or past seasons) can be backfilled on demand.</p>
+        </div>
+      </div>
+      <p style="margin-top:1.5rem"><b>One asterisk on Principle 3</b> ("compute is ephemeral"): the Dagster daemon itself has to run continuously to evaluate schedules and sensors — a small, cheap, always-on control-plane process, not compute. It wakes up ephemeral Spark/Dask/Python jobs; it doesn't do the work itself.</p>
+      <p class="reuse-note" style="margin-top:.6rem"><b>Open gap, worth flagging:</b> nothing here alerts you when a scheduled run fails. A silently-broken Tuesday NFL pull is exactly the kind of thing you won't notice until Sunday. Worth a lightweight optional module — a Dagster failure hook wired to a webhook or push notification — before Phase 4 goes live with a real schedule.</p>
+    </section>
+
+    <section id="topology" class="wide">
+      <span class="section-num">§6</span>
+      <h2>Cluster topology</h2>
+      <p style="max-width:66ch">A reference layout for three nodes — the sweet spot for "small cluster." With two, fold storage onto the control node; with four, split compute across two workers and let the scheduler balance Spark/Dask pods between them. Node roles here are physical and don't change with tenant count — workspaces are a logical slice on top, each with a <code>ResourceQuota</code> scheduled onto the compute node(s), not a node of its own. That's what keeps three workspaces from needing three clusters.</p>
+      <div class="nodes">
+        <div class="node">
+          <span class="node-role">Control</span>
+          <h4>node-a</h4>
+          <ul>
+            <li>k3s server</li>
+            <li>platform-gateway</li>
+            <li>catalog-lite + Postgres (metadata)</li>
+            <li>Keycloak</li>
+            <li>UI shell</li>
+          </ul>
+        </div>
+        <div class="node">
+          <span class="node-role">Storage</span>
+          <h4>node-b</h4>
+          <ul>
+            <li>SeaweedFS</li>
+            <li>Longhorn / NFS volumes</li>
+            <li>Postgres (warehouse), if split from node-a</li>
+            <li>Trino coordinator</li>
+          </ul>
+        </div>
+        <div class="node">
+          <span class="node-role">Compute · tainted</span>
+          <h4>node-c (+ node-d)</h4>
+          <ul>
+            <li>JupyterHub kernels</li>
+            <li>Ephemeral Spark / Dask workers</li>
+            <li>Dagster job runners</li>
+            <li>Streamlit / Superset pods</li>
+          </ul>
+        </div>
+      </div>
+      <p style="margin-top:1rem; font-size:.92rem;">Label and taint the compute node(s) so a Spark job can't starve the shell or the catalog of CPU during a Sunday-afternoon NFL scoring run.</p>
+    </section>
+
+    <section id="placement">
+      <span class="section-num">§7</span>
+      <h2>Node placement &amp; scale</h2>
+      <p>Every physical node gets one label — <code>platform.io/role: control|storage|compute</code> — applied once, at join time, by the same script that adds it to the cluster. Module charts don't hardcode a machine name; they request a role, so a module's <code>module.yaml</code> carries an optional placement hint that the chart wrapper turns into the actual <code>nodeSelector</code>/<code>tolerations</code> block:</p>
+      <pre><code>placement:
+  role: compute
+  tolerations:
+    - key: platform.io/role
+      operator: Equal
+      value: compute
+      effect: NoSchedule</code></pre>
+      <p style="margin-top:1rem">That's what makes the taint in §6 real: <code>kubectl taint nodes node-c platform.io/role=compute:NoSchedule</code> means nothing except compute-labeled workloads lands there — the shell, gateway, and catalog stay off it entirely, even under load.</p>
+      <p><b>Adding a node.</b> On a machine you own, growing the cluster is a physical act: plug it in, then <code>bootstrap/join-node.sh --role compute --token &lt;k3s-token&gt;</code> installs the k3s agent, applies the role label and taint, and the scheduler picks it up immediately. No chart changes anywhere — existing compute-role workloads simply get more room, and the next ephemeral Spark/Dask job can land there. Removing a node is the same in reverse: cordon, drain, then physically pull it (or terminate it, on cloud).</p>
+      <p>On cloud compute, <code>join-node.sh</code> still works the same way against a freshly provisioned instance, but there's a second option bare metal doesn't have: point a cluster-autoscaler (or your cloud's managed node group) at the <code>compute</code>-role node pool and let it add and remove instances on its own under load — the ephemeral-compute principle already assumes workloads come and go, so it composes cleanly with infrastructure that comes and goes too. Worth adding once compute cost is metered; not worth the complexity before then.</p>
+    </section>
+
+    <section id="backup" class="wide">
+      <span class="section-num">§8</span>
+      <h2>Backup &amp; disaster recovery</h2>
+      <p style="max-width:70ch">Most of this platform doesn't need backing up — it needs to be <i>reconstructible</i>. Every core service and every module is declared in git (<code>core/</code>, <code>modules/</code>, <code>modules-enabled/</code>); Argo CD can rebuild the entire cluster's configuration from a fresh checkout of that repo. What can't be regenerated is data and secrets, so that's where backup effort actually concentrates:</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>What</th><th>Where it lives</th><th>How it's backed up</th></tr></thead>
+          <tbody>
+            <tr><td>Catalog + workspace metadata</td><td>Postgres (catalog-lite schema)</td><td>CloudNativePG's built-in WAL archiving + base backups, continuously, to a dedicated SeaweedFS bucket — point-in-time recovery, not just nightly snapshots</td></tr>
+            <tr><td>Keycloak realm (users, groups, workspaces)</td><td>Postgres (Keycloak schema)</td><td>Same CloudNativePG mechanism, same bucket</td></tr>
+            <tr><td>The actual data lake</td><td>SeaweedFS</td><td>On-cluster: Longhorn/NFS replication protects against one disk or node dying. Off-cluster: a scheduled <code>rclone sync</code> of critical buckets to an external drive or offsite location — on-cluster redundancy alone doesn't survive a fire, theft, or a bad <code>rm</code></td></tr>
+            <tr><td>Secrets encryption key (sealed-secrets private key, or Vault unseal keys)</td><td>Nowhere reproducible</td><td>Exported and stored <i>outside</i> the cluster the moment it's generated — lose this and every other backup is unreadable ciphertext</td></tr>
+            <tr><td>k3s cluster datastore (SQLite by default; etcd if <code>--cluster-init</code>)</td><td><code>node-a</code></td><td><code>bootstrap/snapshot-setup.sh</code> — a systemd timer running a SQLite online <code>.backup</code> (not k3s's built-in <code>etcd-snapshot</code>, which is etcd-only), with optional <code>rclone</code> push to any cloud remote</td></tr>
+            <tr><td>Argo CD's own state</td><td>Git + a few in-cluster repo-credential secrets</td><td>Effectively already backed up — it's git. Only the repo credentials need to ride along with the secrets-key backup above</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p style="margin-top:1rem; max-width:70ch"><b>What recovery actually looks like</b> if <code>node-a</code> dies outright: provision a replacement, restore the k3s datastore snapshot and the secrets encryption key, point it at the git repo, and Argo CD reconciles <code>core/</code> and <code>modules-enabled/</code> back into existence on its own — that's the payoff of everything being declarative. Then restore the two Postgres databases from their CloudNativePG backups. SeaweedFS's data was never on <code>node-a</code> to begin with (it lives on <code>node-b</code>, per §6), so it's untouched throughout. Total recovery time is bounded by how fast two databases restore and one script re-runs, not by how much configuration you remember by hand.</p>
+      <p class="reuse-note" style="max-width:70ch"><b>What this design doesn't give you: zero-downtime failover.</b> A single control node means a control-node failure is an outage, not a seamless handoff — acceptable for a single low-stakes deployment, less so for a team depending on this daily. See §12 for the upgrade path.</p>
+    </section>
+
+    <section id="usecases" class="wide">
+      <span class="section-num">§9</span>
+      <h2>Your three use cases, through the same pipe</h2>
+      <p style="max-width:66ch">Same five-step shape every time — ingest, land, transform, catalog, serve. What changes is the content, not the plumbing, which is the whole point of building this once. Written here as one person's workspace; in a team install each of these could just as easily be its own workspace with its own members.</p>
+
+      <div class="usecase">
+        <h4>Stocks, news &amp; Reddit mentions</h4>
+        <p class="uc-what">Continuous ingestion, ad hoc exploration, a standing dashboard.</p>
+        <div class="flow">
+          <div class="flow-step"><span class="fs-label">Ingest</span>Dagster job hits price API, news API, Reddit via PRAW on a schedule</div>
+          <div class="flow-step"><span class="fs-label">Land</span>Raw JSON/parquet → <code class="mono">s3://bronze/stocks/</code></div>
+          <div class="flow-step"><span class="fs-label">Transform</span>Polars job joins price + mentions, scores sentiment → Postgres/Iceberg</div>
+          <div class="flow-step"><span class="fs-label">Catalog</span>Tables + the sentiment-scorer function registered</div>
+          <div class="flow-step"><span class="fs-label">Serve</span>Streamlit ticker dashboard, ad hoc SQL in Jupyter via Trino</div>
+        </div>
+      </div>
+
+      <div class="usecase">
+        <h4>In-season NFL betting ideas</h4>
+        <p class="uc-what">Weekly cadence, a trained model, a "what should I look at" UI.</p>
+        <div class="flow">
+          <div class="flow-step"><span class="fs-label">Ingest</span>Weekly job pulls odds + team/player stats APIs</div>
+          <div class="flow-step"><span class="fs-label">Land</span><code class="mono">s3://bronze/nfl/</code></div>
+          <div class="flow-step"><span class="fs-label">Transform</span>Feature pipeline scores edges; model version pulled from MLflow</div>
+          <div class="flow-step"><span class="fs-label">Catalog</span>Dataset + model version registered</div>
+          <div class="flow-step"><span class="fs-label">Serve</span>Streamlit "this week's value bets" app, reads Postgres directly</div>
+        </div>
+        <p class="reuse-note"><b>Reuse ready:</b> feature/elo functions live in <code>platform-sdk</code>, not in this pipeline — so March Madness below doesn't reinvent them.</p>
+      </div>
+
+      <div class="usecase">
+        <h4>March Madness Kaggle contest</h4>
+        <p class="uc-what">Bursty, deadline-driven, needs a fast turnaround from dataset to submission.</p>
+        <div class="flow">
+          <div class="flow-step"><span class="fs-label">Ingest</span>Manual trigger pulls the Kaggle dataset</div>
+          <div class="flow-step"><span class="fs-label">Land</span><code class="mono">s3://bronze/march-madness/</code></div>
+          <div class="flow-step"><span class="fs-label">Transform</span>Reuses NFL's feature functions + existing model from the registry</div>
+          <div class="flow-step"><span class="fs-label">Catalog</span>Run + submission logged, so you can compare seasons later</div>
+          <div class="flow-step"><span class="fs-label">Serve</span><code>submission.csv</code> in the UI, results browsable in Jupyter</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="repo" class="wide">
+      <span class="section-num">§10</span>
+      <h2>Repo layout</h2>
+      <p style="max-width:66ch">Shaped so someone cloning this later can install <code>core/</code> and stop, or keep going through <code>modules/</code> one at a time.</p>
+      <span class="filecap">platform/</span>
+      <pre><code>platform/
+  core/
+    gateway/              # module registry, nav aggregation, Add-ons page API
+    catalog-service/       # datasets, functions, pipelines, models, workspaces
+    ui-shell/               # the one front door + workspace switcher
+    auth/                    # Keycloak realm + client + workspace-group config
+  modules/                    # every module the repo KNOWS how to install (the catalog)
+    storage-seaweedfs/
+    storage-postgres/
+    query-trino/
+    orchestration-dagster/
+    compute-spark-operator/
+    compute-dask/
+    notebook-jupyterhub/
+    serving-streamlit-template/
+    serving-superset/
+    ml-mlflow/
+  modules-enabled/            # which of the above THIS deployment turned on — Argo CD watches this
+  platform-sdk/             # python: connectors, @platform decorators, catalog client
+  platform-cli/              # scaffold / install / register
+  charts/                     # one helm chart per module + core
+  bootstrap/
+    install.sh                 # the one unavoidable script: k3s + core as an Argo CD app-of-apps
+  examples/
+    stocks-pipeline/
+    nfl-betting/
+    march-madness/
+  docs/</code></pre>
+
+      <h3>Branching &amp; CI</h3>
+      <p style="max-width:66ch">Three long-lived branches, each a step of promotion: <code>main</code> (stable, what you'd stand a deployment up from) &larr; <code>test</code> (integration-validated, candidate for <code>main</code>) &larr; <code>dev</code> (where feature branches land first). Everything else is a short-lived <code>feature/&lt;name&gt;</code> (or <code>fix/&lt;name&gt;</code>) branch cut from <code>dev</code>, merged back into <code>dev</code> via PR, then never touched again.</p>
+      <p style="max-width:66ch">Promotion between the three long-lived branches is also a PR, never a direct push — <code>dev &rarr; test</code> and <code>test &rarr; main</code> — even solo, so every promotion gets a diff and a CI run instead of trusting memory. <code>main</code>, <code>test</code>, and <code>dev</code> are all protected: no direct pushes, PR required, CI must pass before merge. This also happens to line up with how the platform itself is deployed (§3, §6) — if you ever run separate dev/test/prod clusters, Argo CD can point each one at the matching branch, so branch promotion and environment promotion become the same motion instead of two.</p>
+      <p style="max-width:66ch">CI (GitHub Actions, <code>.github/workflows/ci.yml</code>) runs on every PR into <code>dev</code>/<code>test</code>/<code>main</code>, path-filtered so it only lints what actually changed and stays green while most of the repo is still empty:</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Changed paths</th><th>Check</th></tr></thead>
+          <tbody>
+            <tr><td><code>**/*.md</code></td><td>markdownlint</td></tr>
+            <tr><td><code>**/*.yml</code>, <code>**/*.yaml</code></td><td>yamllint</td></tr>
+            <tr><td><code>src/**/*.py</code>, <code>platform-sdk/**</code>, <code>platform-cli/**</code></td><td>ruff + pytest</td></tr>
+            <tr><td><code>**/*.sh</code></td><td>shellcheck</td></tr>
+            <tr><td><code>**/Dockerfile*</code></td><td>hadolint</td></tr>
+            <tr><td><code>charts/**</code>, <code>**/Chart.yaml</code></td><td><code>helm lint</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p style="max-width:66ch">Each check is a no-op until there's something of that kind to lint, so the pipeline doesn't start red on a docs-only repo — it grows teeth as <code>src/</code>, <code>charts/</code>, and <code>bootstrap/*.sh</code> fill in.</p>
+    </section>
+
+    <section id="roadmap" class="wide">
+      <span class="section-num">§11</span>
+      <h2>Build order</h2>
+      <p style="max-width:66ch">Each phase is usable on its own — you're not blocked on finishing the whole thing before any use case works. Tenancy rides along in phases 0 and 2 rather than getting its own phase, because retrofitting it later is the expensive path.</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th class="num">Phase</th><th>Focus</th><th>You get</th><th>Adds</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="num">0</td><td>Infrastructure bedrock</td><td>A cluster that stays up</td><td>k3s, MetalLB, ingress, cert-manager, Longhorn/NFS, Keycloak realm + workspace-group model (seeds one <code>personal</code> workspace), Argo CD, secrets, node role labels/taints + <code>join-node.sh</code>, <code>bootstrap/teardown.sh</code>, k3s datastore snapshot schedule, Prometheus/Grafana/Loki</td></tr>
+            <tr><td class="num">1</td><td>Storage</td><td>Somewhere to land data</td><td>SeaweedFS, Postgres (CloudNativePG) with WAL-archive backups to SeaweedFS, offsite <code>rclone sync</code> for critical buckets</td></tr>
+            <tr><td class="num">2</td><td>Catalog &amp; shared code</td><td>Things become findable and reusable</td><td>catalog-lite (with <code>workspace_id</code> + visibility on every table), function publish/versioning, <code>platform module uninstall --purge-data</code>, platform-sdk, platform-cli, <code>platform workspace</code> commands, git remote</td></tr>
+            <tr><td class="num">3</td><td>Query + exploration</td><td>You can actually look at your data</td><td>Trino, JupyterHub — bundled together since one needs the other</td></tr>
+            <tr><td class="num">4</td><td>Orchestration</td><td>Ingestion stops being a cron job on your laptop</td><td>Dagster + daemon, cron schedule + asset sensor for stocks, failure-hook alerting</td></tr>
+            <tr><td class="num">5</td><td>Compute scale-out</td><td>Room to grow when data volume asks for it</td><td>Spark Kubernetes Operator, Dask</td></tr>
+            <tr><td class="num">6</td><td>Serving</td><td>The NFL/March Madness payoff — dashboards and model tracking</td><td>Streamlit, Superset, MLflow, shell polish</td></tr>
+            <tr><td class="num">7</td><td>Open-source prep</td><td>Someone else can stand this up</td><td>Docs, module template, one-command bootstrap, seeded demo dataset, <code>install.sh</code>/<code>teardown.sh</code> validated against a clean cloud environment (not just home hardware)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="reuse-note" style="margin-top:1rem"><b>Do this on day one, not later:</b> export the secrets-encryption key to offsite storage the moment it's generated in Phase 0. Every other piece of state in §8 can be restored from backups; that key can't be regenerated, and losing it makes every other backup unreadable ciphertext.</p>
+    </section>
+
+    <section id="decisions">
+      <span class="section-num">§12</span>
+      <h2>Open calls</h2>
+      <p class="lede">Defaults I picked to keep this moving — worth revisiting once real usage tells you otherwise.</p>
+
+      <div class="decision">
+        <h4>Tenancy: model it now vs bolt it on later</h4>
+        <p class="picked"><b>Picked:</b> workspace as a first-class concept from Phase 0, even for a single user.</p>
+        <p>The cost today is one foreign key and a seeded default row. The alternative — retrofitting multi-tenancy into a catalog schema, a bucket layout, and a Postgres role structure that were designed for one user — is a rewrite, not a migration. Paying a fixed, small cost now is cheaper than paying an unbounded one later.</p>
+      </div>
+      <div class="decision">
+        <h4>Catalog: build vs adopt</h4>
+        <p class="picked"><b>Picked:</b> a lightweight custom service (Postgres + FastAPI) over OpenMetadata or DataHub.</p>
+        <p>Those tools are excellent but heavy for three personal projects — they bring their own ingestion agents and UI opinions. Switch once you actually want lineage graphs or multi-user governance, not before.</p>
+      </div>
+      <div class="decision">
+        <h4>Orchestrator: Dagster vs Argo Workflows</h4>
+        <p class="picked"><b>Picked:</b> Dagster.</p>
+        <p>Its asset model matches the catalog-first thinking here, and the local dev loop (no cluster needed to iterate on a pipeline) matters when you're the only user. Argo is the fallback if you'd rather stay purely k8s-native with one fewer moving process.</p>
+      </div>
+      <div class="decision">
+        <h4>Module lifecycle: GitOps</h4>
+        <p class="picked"><b>Picked:</b> Argo CD (or Flux) watching a <code>modules-enabled/</code> directory.</p>
+        <p>Makes "decide what pieces you want" a literal file operation instead of a runbook, and gives you a rollback path when a module misbehaves.</p>
+      </div>
+      <div class="decision">
+        <h4>Node roles</h4>
+        <p class="picked"><b>Picked:</b> the 3-node reference above, as a starting assumption.</p>
+        <p>Actual specs will move things around — swap in your real node count and RAM/CPU and the control/storage/compute split above should adjust accordingly.</p>
+      </div>
+      <div class="decision">
+        <h4>Function sharing: local-only vs a cross-instance hub</h4>
+        <p class="picked"><b>Picked:</b> local-only for now — visibility scoping inside your own catalog, nothing shared outside it.</p>
+        <p>A community registry (<code>platform function install community/&lt;name&gt;</code>, pulling in someone else's published connector the way <code>pip install</code> reaches PyPI) is a genuinely good idea once this is open-sourced — but it's a different system, a package index rather than a metadata catalog, and building it before anyone else runs this platform solves a problem that doesn't exist yet. Keep the function-metadata schema stable so it's addable later without a rewrite.</p>
+      </div>
+      <div class="decision">
+        <h4>Pipeline failure alerting</h4>
+        <p class="picked"><b>Picked:</b> a lightweight optional module (Dagster failure hook → webhook/push notification), not built into core.</p>
+        <p>A single-user deployment doesn't need a heavy notification system, and it shouldn't be mandatory for someone who doesn't want it — but it's cheap enough to belong in Phase 4, not "someday."</p>
+      </div>
+      <div class="decision">
+        <h4>DR strategy: backup-and-restore vs a true HA control plane</h4>
+        <p class="picked"><b>Picked:</b> backup-and-restore (§8), with a single control-plane node, as the default.</p>
+        <p>A genuinely HA control plane means running k3s server on 3 nodes (an odd number, for etcd quorum) plus HA'ing Postgres and Keycloak themselves — real operational weight for a small deployment, buying you minutes of avoided downtime a few times a year at best. Worth revisiting once this is actually serving a team that notices an outage; the git-native design doesn't block that upgrade later, it just isn't the default.</p>
+      </div>
+    </section>
+
+    <footer>
+      This is meant to be argued with as you build — not a spec to implement literally end to end. A reasonable next step once Phase 0–2 are running: pick whichever of the three use cases has the most annoying manual step today and let it be the first thing that moves onto the platform.
+    </footer>
+  </main>
+</div>
+
+<script>
+(function(){
+  try{
+    var links = Array.prototype.slice.call(document.querySelectorAll('[data-toc]'));
+    var sections = links.map(function(l){ return document.querySelector(l.getAttribute('href')); }).filter(Boolean);
+    if(!('IntersectionObserver' in window) || !sections.length) return;
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if(e.isIntersecting){
+          var id = '#' + e.target.id;
+          links.forEach(function(l){ l.classList.toggle('active', l.getAttribute('href') === id); });
+        }
+      });
+    }, { rootMargin: '-15% 0px -70% 0px', threshold: 0 });
+    sections.forEach(function(s){ io.observe(s); });
+  }catch(e){}
+})();
+</script>

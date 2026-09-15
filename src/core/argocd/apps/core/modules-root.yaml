@@ -1,0 +1,79 @@
+# The second level of a three-level app-of-apps (platform-module-lifecycle branch, 2026-09-03) —
+# docs/architecture/module-lifecycle-plan.md's item 1. root-app.yaml watches apps/core/ (this
+# file lives there) and turns every file it finds into a running piece of core; this Application
+# does the exact same thing one level down, watching src/modules-enabled/ and turning every file
+# IN THERE into a running module. Each file `platform module install <name>` writes to
+# modules-enabled/ is itself a complete Argo CD `Application` manifest (see
+# platform_cli/manifest.py's render_application_manifest), not a lightweight pointer — this
+# Application's only job is discovering those files, the same "app of apps" mechanism, one layer
+# further down.
+#
+# Destination namespace is `argocd` (not a real workload namespace) because, like root-app.yaml
+# itself, this Application only ever creates further Application objects — it never deploys a pod
+# of its own. It carries the same `resources-finalizer.argocd.argoproj.io` finalizer root-app.yaml
+# has, for the same reason: deleting a child Application (on `platform module uninstall <name>`,
+# which just removes its file from modules-enabled/) must cascade-delete everything THAT
+# Application owns — its Deployment, Service, etc. — not just disappear itself and leave orphans.
+# Any PersistentVolumeClaim a module's chart marks `argocd.argoproj.io/sync-options: Delete=false`
+# survives that cascade on purpose (ARCHITECTURE.md §3) — see src/charts/hello-module/templates/
+# pvc.yaml for the convention this relies on.
+#
+# `directory.recurse: false`, same as root-app.yaml — modules-enabled/ is meant to hold one flat
+# file per installed module (module.yaml lives in modules/<name>/ instead, which this Application
+# never looks at directly), so there's nothing to recurse into.
+#
+# `AllowEmpty=true` (fix/modules-root-allow-empty-sync, 2026-09-08) — found live: with zero modules
+# installed, modules-enabled/ holds only its own README.md, so this Application's target state
+# resolves to zero child Applications. Argo CD's default safety guard refuses to auto-sync when a
+# directory source resolves to nothing, specifically to avoid an accidental repo/path mistake
+# silently wiping out everything a directory-sourced app manages — but "no modules installed" is a
+# completely ordinary, expected state here, not a mistake. Without this flag, that guard doesn't
+# just skip one sync attempt: it permanently freezes THIS Application every time the last module
+# gets uninstalled, which also means it stops pruning anything else in modules-enabled/ from then
+# on. See docs/known-issues.md's "modules-root silently stops syncing once the last module is
+# uninstalled" entry for how this was actually found (two real orphaned Deployments left running
+# for 4+ days) and confirmed fixed.
+#
+# Wave 5, one after gateway (wave 4) — modules commonly declare `requires: [auth, catalog]` in
+# their own module.yaml (ARCHITECTURE.md §3's own notebook-jupyterhub example), so it's worth core
+# being fully up before Argo CD starts trying to reconcile whatever's in modules-enabled/. Not
+# currently enforced (dependency-checking is item 6, explicitly deferred — see
+# docs/architecture/module-lifecycle-plan.md) — this wave placement is a best-effort ordering, the
+# same "applied isn't the same as ready" caveat every other wave boundary in this file has, not a
+# real block on syncing a module whose `requires` aren't actually satisfied yet.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: modules-root
+  namespace: argocd
+  labels:
+    platform.io/tier: core
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  # Hardcoded, not __REPO_URL__/__REVISION__ — see README.md ("Self-referencing apps") for why:
+  # install.sh's placeholder substitution only ever touches root-app.yaml, never the files under
+  # apps/, which Argo CD reads straight from git with no templating of its own. Every module
+  # Application platform-cli generates follows the exact same convention (manifest.py), except it
+  # discovers repoURL from `git remote get-url origin` instead of hardcoding it — see that file's
+  # own docstring for why generated content doesn't need the "forkers: edit this" caveat this one
+  # does.
+  source:
+    repoURL: git@github.com:DougallPercival/opendataplatform.git
+    targetRevision: dev
+    path: src/modules-enabled
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - AllowEmpty=true

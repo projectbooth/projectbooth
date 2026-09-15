@@ -1,0 +1,22 @@
+# Defaults good enough for `helm template`/`helm lint` to run against this chart directly, with no
+# real module.yaml in the loop. In the actual deployed cluster, every value here is overridden by
+# the generated Application's own `spec.source.helm.values` block — `platform-cli module install`
+# computes that block from this module's `module.yaml` (docs/architecture/module-lifecycle-plan.md,
+# "Recommended first slice") — so editing this file changes local `helm template` output, not what
+# actually lands on the cluster.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/dougallpercival/__MODULE_ID__
+  tag: dev
+  pullPolicy: IfNotPresent
+
+service:
+  port: 80
+
+# ARCHITECTURE.md §7's chart-wrapper node-placement hint. Empty by default — with no
+# placement.role, templates/_helpers.tpl's platform.nodeAffinity/platform.tolerations helpers
+# render to nothing at all, so the chart is schedulable on any node until a module.yaml actually
+# asks for a role (control/storage/compute). Even with a role set, this is a PREFERRED affinity,
+# not a hard requirement — see ARCHITECTURE.md §12's "Single-node placement fallback" decision.
+placement: {}

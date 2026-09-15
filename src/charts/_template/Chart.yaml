@@ -1,0 +1,9 @@
+# Copied and parameterized by `platform-cli module scaffold <name>` (platform-module-lifecycle
+# branch, 2026-09-03) — see ARCHITECTURE.md §3 ("Building a new module") and
+# docs/architecture/module-lifecycle-plan.md. __MODULE_ID__/__DISPLAY_NAME__ are the two tokens
+# scaffold substitutes; everything else is safe to leave as-is for a first module.
+apiVersion: v2
+name: __MODULE_ID__
+description: __DISPLAY_NAME__ — an OpenDataPlatform module.
+version: 0.1.0
+appVersion: "1.0"

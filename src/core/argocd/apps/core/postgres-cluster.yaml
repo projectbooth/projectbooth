@@ -1,0 +1,38 @@
+# The actual database — a plain-manifests Application (not Helm), since this
+# is one Cluster custom resource, not a chart. Wave 1 so postgres-operator's
+# CRDs (wave 0) are already registered.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: postgres-cluster
+  namespace: argocd
+  labels:
+    platform.io/tier: core
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  # repoURL/targetRevision are hardcoded, not __REPO_URL__/__REVISION__ like
+  # root-app.yaml: those placeholders only ever get resolved by install.sh's
+  # sed, which runs ONLY against root-app.yaml before applying it directly.
+  # Everything under src/core/argocd/apps/ (this file included) is read
+  # straight from git BY ARGO CD ITSELF, with no templating step of its own —
+  # a placeholder left in here is a literal, permanently-broken repoURL, not
+  # a value that gets filled in later. Update targetRevision by hand if you
+  # deliberately bootstrap from a different branch than dev (see
+  # docs/known-issues.md).
+  source:
+    repoURL: git@github.com:DougallPercival/opendataplatform.git
+    targetRevision: dev
+    path: src/core/argocd/manifests
+    directory:
+      include: "postgres-cluster.yaml"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: postgres
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

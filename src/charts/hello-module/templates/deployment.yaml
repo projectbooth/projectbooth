@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "platform.fullname" . }}
+  labels:
+    app: {{ include "platform.fullname" . }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "platform.fullname" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "platform.fullname" . }}
+    spec:
+      {{- if .Values.placement.role }}
+      {{- include "platform.nodeAffinity" . | nindent 6 }}
+      {{- end }}
+      {{- if .Values.placement.tolerations }}
+      {{- include "platform.tolerations" . | nindent 6 }}
+      {{- end }}
+      containers:
+        - name: {{ include "platform.fullname" . }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.service.port }}
+          # Mounted but never read by nginx's own config — this volume exists only to give
+          # --purge-data something real to delete, per module.yaml's own header comment.
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "platform.fullname" . }}-data

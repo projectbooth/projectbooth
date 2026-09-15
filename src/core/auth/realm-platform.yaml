@@ -1,0 +1,78 @@
+# The workspace-group model (ARCHITECTURE.md §4) — seeded declaratively via the
+# Keycloak Operator's own KeycloakRealmImport CRD (same operator already
+# installed by apps/core/keycloak-operator.yaml; no extra tooling needed).
+# apiVersion confirmed against the exact operator version this repo pins
+# (26.7.2 — see apps/core/keycloak-operator.yaml) rather than assumed:
+# https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.7.2/kubernetes/keycloakrealmimports.k8s.keycloak.org-v1.yml
+#
+# IMPORTANT LIMITATION (from Keycloak's own docs, keycloak.org/operator/realm-import):
+# this only ever CREATES the realm — if a realm named "platform" already exists,
+# re-syncing this resource does NOT update it. That's fine for a one-time seed
+# (which is all "personal" needs to be — ARCHITECTURE.md: "what it buys a solo
+# user: nothing, on purpose"), but it means editing groups/roles here later
+# and expecting the change to reach an already-imported realm won't work —
+# you'd manage that specific change through Keycloak's own admin console or
+# `kcadm.sh` instead, same as any other one-time-import tool.
+#
+# Every workspace maps to a Keycloak group PATH, not a separate role
+# assignment — /workspaces/<name>/<role> encodes both which workspace and
+# which of the three roles (owner/editor/viewer) in one membership. That's
+# what keeps "invite someone" a single action (ARCHITECTURE.md §4:
+# `platform workspace invite alice --role editor`, not a schema migration) —
+# adding someone to one group covers both dimensions at once, no separate
+# role-assignment step. Each role-group also gets the matching realm role
+# mapped onto it (via realmRoles below), so a client reading the standard
+# `realm_access.roles` JWT claim works exactly the same as one reading the
+# `groups` claim — either is a valid way for a future consumer (gateway,
+# catalog-lite) to check authorization.
+#
+# Scope boundary, on purpose: no users and no OIDC clients are seeded here
+# yet. There's no login flow to use them — ui-shell/platform-gateway
+# (src/core/ui-shell/, src/core/gateway/) don't exist as running services
+# yet, so a client definition here would be a guess at redirect URIs nobody
+# can use, and a seeded user is a git-committed credential nobody needs.
+# Validate this import for now via Keycloak's own admin console (master
+# realm, the KC_BOOTSTRAP_ADMIN_* credentials already set up — see
+# keycloak-instance.yaml/known-issues.md) — switch realm context to
+# "platform" and check Groups. Revisit once an actual OIDC-consuming service
+# exists: ARCHITECTURE.md's repo layout notes each module registers its own
+# client on install (a platform-cli responsibility, not a git-committed one).
+apiVersion: k8s.keycloak.org/v2beta1
+kind: KeycloakRealmImport
+metadata:
+  name: platform-realm
+  namespace: keycloak
+spec:
+  keycloakCRName: platform
+  realm:
+    id: platform
+    realm: platform
+    displayName: Platform
+    enabled: true
+    # Invite-only by design (ARCHITECTURE.md's tenancy model is membership-
+    # driven, not open signup) — Keycloak's own default for a realm created
+    # this way is already registrationAllowed: false; listed here so that's
+    # a deliberate choice on record, not an unexplained default.
+    registrationAllowed: false
+    roles:
+      realm:
+        - name: owner
+          description: "Full control over a workspace — manage membership, delete it."
+        - name: editor
+          description: "Read/write access within a workspace's data and pipelines."
+        - name: viewer
+          description: "Read-only access within a workspace."
+    groups:
+      - name: workspaces
+        subGroups:
+          - name: personal
+            subGroups:
+              - name: owner
+                realmRoles:
+                  - owner
+              - name: editor
+                realmRoles:
+                  - editor
+              - name: viewer
+                realmRoles:
+                  - viewer

@@ -1,0 +1,95 @@
+# SeaweedFS — the in-cluster S3-compatible object store (ARCHITECTURE.md §2's
+# storage layer; Phase 1). Originally spec'd as MinIO throughout
+# ARCHITECTURE.md; swapped 2026-08-31, before ever being built, because
+# MinIO's Community Edition was archived upstream Feb 13, 2026 (paid features
+# pulled out of the console mid-2025, maintenance mode Dec 2025, archived
+# Feb 2026 — see docs/known-issues.md). SeaweedFS was picked over the other
+# options considered (Garage, sticking with an unmaintained MinIO image) for
+# having an official Helm chart maintained by the project itself and being
+# resource-light enough for a single homelab node.
+#
+# This whole app is optional (2026-08-31) — only synced when install.sh is
+# run WITHOUT --skip-seaweedfs (default: deployed). See
+# src/core/argocd/optional/storage-seaweedfs-app.yaml and README.md's
+# "Portability" section. Skip it anywhere real S3-compatible storage already
+# exists — a cloud deployment with actual AWS S3/R2/B2/etc. sitting right
+# there doesn't need a second, redundant object store running inside the
+# cluster. --skip-seaweedfs expects --s3-endpoint (and S3 credentials via
+# env vars, not a bare flag — see install.sh --help) so postgres-backup.yaml's
+# ObjectStore has something real to point at either way.
+#
+# Deliberately NOT the MinIO-shaped "one binary, one deployment" mental model
+# — SeaweedFS is master/volume/filer/s3 components. For a single homelab
+# node this collapses to one pod each (replicas: 1 below, matching the
+# chart's own defaults), all schedulable on the same host: the chart's
+# default pod anti-affinity assumes a multi-node cluster and blocks that, so
+# it's turned off below. Scale replicas up and re-enable affinity once you
+# have more than one storage-capable node.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: storage-seaweedfs
+  namespace: argocd
+  labels:
+    platform.io/tier: optional
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: https://seaweedfs.github.io/seaweedfs/helm
+    chart: seaweedfs
+    targetRevision: 4.44.0   # appVersion 4.44 — check for newer: https://github.com/seaweedfs/seaweedfs/releases
+    helm:
+      values: |
+        master:
+          replicas: 1
+          affinity: ""
+          data:
+            type: "persistentVolumeClaim"
+            size: "5Gi"
+            storageClass: ""   # unset on purpose — inherits the cluster's default StorageClass, same reasoning as postgres-cluster.yaml
+        volume:
+          replicas: 1
+          affinity: ""
+          dataDirs:
+            - name: data1
+              type: "persistentVolumeClaim"
+              size: "50Gi"   # the actual data — bump this (or add nodes + replicas) as your lake grows
+              storageClass: ""
+              maxVolumes: 0   # 0 = auto
+        filer:
+          replicas: 1
+          affinity: ""
+          data:
+            type: "persistentVolumeClaim"
+            size: "5Gi"
+            storageClass: ""
+        # The S3 gateway is its own top-level component in this chart (a
+        # sibling of master/volume/filer, its own Deployment) — NOT
+        # filer.s3.enabled, which is a different, separate embedded-gateway
+        # toggle this repo leaves off. Confirmed against the chart's own
+        # values.yaml comments directly, not assumed.
+        s3:
+          enabled: true
+          replicas: 1
+          port: 8333
+          enableAuth: true
+          credentials:
+            admin:
+              existingSecret: "platform-s3-credentials"   # created by install.sh — see its own comments
+              accessKeyKey: "ACCESS_KEY_ID"
+              secretKeyKey: "ACCESS_SECRET_KEY"
+          # Bucket creation is handled by manifests/postgres-backup.yaml's Job
+          # instead of this chart's own s3.createBuckets — deliberately, so
+          # the same mechanism works whether the bucket lives here or on a
+          # real external S3-compatible endpoint (--skip-seaweedfs).
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: storage-seaweedfs
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

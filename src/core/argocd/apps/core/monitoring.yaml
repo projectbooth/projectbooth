@@ -1,0 +1,56 @@
+# Prometheus + Grafana + Loki — listed as `module` in ARCHITECTURE.md §2's stack
+# table, not `core`, but scaffolded here in core/argocd since Phase 0's build
+# order explicitly includes it. Safe to leave un-synced (disable automated sync
+# below, or just delete this file) if you'd rather bring monitoring in later.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monitoring
+  namespace: argocd
+  labels:
+    platform.io/tier: core
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+    targetRevision: 66.3.1   # check for newer: https://github.com/prometheus-community/helm-charts/releases
+    helm:
+      values: |
+        grafana:
+          defaultDashboardsEnabled: true
+        # node-exporter runs with hostNetwork, so it binds directly to the
+        # HOST's port, not just a container port — 9100 (the chart default)
+        # collided with an existing native node_exporter already running on
+        # this host feeding a separate, pre-existing Prometheus. Moved to
+        # 9101 instead of touching that one. service.port doubles as the
+        # container's actual listen port here; targetPort is kept matching
+        # it on purpose. Scraping keeps working automatically since
+        # Prometheus discovers this via the "metrics" port NAME (unchanged),
+        # not the number — verified against the chart's own ServiceMonitor
+        # template on 2026-08-31.
+        prometheus-node-exporter:
+          service:
+            port: 9101
+            targetPort: 9101
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # kube-prometheus-stack's CRDs (prometheuses.monitoring.coreos.com,
+      # alertmanagers.monitoring.coreos.com, etc.) are large enough that plain
+      # client-side apply's last-applied-configuration annotation blows past
+      # Kubernetes' 262144-byte annotation limit — same failure class as Argo
+      # CD's own applicationsets.argoproj.io CRD and CNPG's CRDs (see
+      # bootstrap/install.sh, postgres-operator.yaml, and docs/known-issues.md).
+      # Confirmed via https://www.arthurkoziel.com/fixing-argocd-crd-too-long-error/ —
+      # ServerSideApply=true alone is the documented fix (Argo CD 2.5+); no
+      # other syncOptions needed alongside it for this chart.
+      - ServerSideApply=true
