@@ -47,6 +47,25 @@ externalChart:
                        # check for a newer release before a real install, same convention already
                        # used by seaweedfs.yaml/reflector.yaml's own pinned versions.
 values:
+  # 2026-09-15: chart defaults (coordinator.jvm.maxHeapSize / worker.jvm.maxHeapSize = 8G each,
+  # server.workers = 2) assume a real multi-node cluster with memory to spare. homelab-dev is a
+  # single k3s node — `kubectl describe node` showed only ~6.35Gi actually free once the rest of
+  # the platform (Postgres, Keycloak, Argo CD, etc.) was already running, nowhere near enough for
+  # an 8G coordinator heap alone, let alone two 8G workers on top of it. That's what was actually
+  # behind the CrashLoopBackOff after the JDBC-catalog config fix: the JVMs weren't crashing on
+  # error, they were losing the race against their own startup probe under CPU/memory contention
+  # (kubectl describe pod showed repeated "Startup probe failed: Server is starting" rather than
+  # any exception). Sized down to fit: 2G heap each, one worker instead of two — proves the real
+  # coordinator+worker architecture without trying to run a production-sized footprint on a single
+  # homelab box. Revisit once this cluster has more than one node (ARCHITECTURE.md §6/§7).
+  coordinator:
+    jvm:
+      maxHeapSize: "2G"
+  worker:
+    jvm:
+      maxHeapSize: "2G"
+  server:
+    workers: 1
   # catalogs: is the chart's own top-level mechanism for Trino catalog properties (one entry per
   # catalog, raw Trino .properties text — see charts/trino/values.yaml's own `catalogs:` key).
   # ${ENV:VAR} is Trino's own native secrets substitution (trino.io docs, "Secrets"), independent
