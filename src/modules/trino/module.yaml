@@ -121,6 +121,28 @@ values:
     # handled by whatever consumer needs one, the way postgres-backup.yaml's Job does for its own
     # bucket). Iceberg won't actually be able to CREATE SCHEMA/TABLE until that bucket exists —
     # tracked as its own step before the real-query verification, not blocking this startup fix.
+    # 2026-09-15 (later still): config validation passed and the startup-probe/resource fix above
+    # got the pods running long enough to reach real startup — but the coordinator now dies with a
+    # real exception during catalog init: IcebergConnectorFactory -> TrinoFileSystemFactory fails
+    # constructing its S3 client, Guice's error dump naming SdkClientException and
+    # SystemSettingsRegionProvider (the AWS SDK's own region-resolution chain). Root-caused against
+    # Trino's own current docs (trino.io/docs/current/object-storage/file-system-s3.html, fetched
+    # fresh just now, not recalled from memory — this repo already got burned once this same day by
+    # trusting an unverified property name): two things were actually wrong, not one.
+    #  1. The property that turns on the native S3 filesystem implementation is `fs.s3.enabled`, not
+    #     `fs.native-s3.enabled` — the docs state that literal property name verbatim. The old
+    #     property name isn't one this connector recognizes, so it was silently ignored rather than
+    #     rejected (Trino's catalog-property validation doesn't appear to hard-fail on an unused key
+    #     the way IcebergJdbcCatalogConfig did on a missing required one) — which is exactly why the
+    #     earlier "no Configuration errors" log check looked clean: the S3 support this catalog
+    #     actually needs was never really enabled.
+    #  2. `s3.region` is a real, separate property (docs: "S3 region to communicate with") that this
+    #     draft never set at all. Against a real AWS S3 endpoint the SDK can often infer a region;
+    #     against SeaweedFS there's no EC2 metadata service, no ~/.aws/config, no AWS_REGION env var
+    #     for SystemSettingsRegionProvider to find anything — nothing for the SDK's default region
+    #     chain to resolve, which throws SdkClientException. SeaweedFS itself ignores the region value
+    #     (routing is entirely via s3.endpoint/s3.path-style-access above) — set to a placeholder
+    #     AWS-shaped value purely so the SDK's client builder has something to resolve.
     iceberg: |
       connector.name=iceberg
       iceberg.catalog.type=jdbc
@@ -130,8 +152,9 @@ values:
       iceberg.jdbc-catalog.connection-user=trino
       iceberg.jdbc-catalog.connection-password=${ENV:TRINO_DB_PASSWORD}
       iceberg.jdbc-catalog.default-warehouse-dir=s3://trino-warehouse
-      fs.native-s3.enabled=true
+      fs.s3.enabled=true
       s3.endpoint=http://storage-seaweedfs-s3.storage-seaweedfs.svc:8333
+      s3.region=us-east-1
       s3.path-style-access=true
       s3.aws-access-key=${ENV:TRINO_S3_ACCESS_KEY}
       s3.aws-secret-key=${ENV:TRINO_S3_SECRET_KEY}
