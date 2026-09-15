@@ -83,6 +83,17 @@ values:
   #     of itself. Explicit `resources.requests` (still no `limits`, so this can't newly OOM-kill anything
   #     that wasn't already at risk) moves it to Burstable QoS, which is what actually gets it a fair CPU
   #     share while starting instead of being starved by whatever else is running.
+  # 2026-09-15 (later still): live on the ephemeral-test cloud environment's smaller
+  # s-4vcpu-8gb droplet, trino-worker sat Pending — `kubectl describe pod` showed "0/1 nodes are
+  # available: 1 Insufficient memory", and `kubectl describe node`'s Allocated-resources block gave
+  # the exact numbers: 7982Mi allocatable, 5428Mi already requested (that 5428Mi already includes
+  # the coordinator's own 2560Mi), leaving 2554Mi free — the worker's 2560Mi request missed
+  # fitting by a razor-thin 6Mi. Lowered both coordinator/worker requests to 2304Mi (still 256Mi of
+  # headroom above the 2G/2048Mi JVM heap for off-heap/metaspace/native-buffer overhead, same
+  # reasoning as this block's original BestEffort->Burstable fix above) — leaves ~250Mi of node
+  # buffer rather than cutting it to the exact byte, since other core pods (Argo CD, etc.) can
+  # transiently use more. Safe for homelab-dev too: strictly less memory requested, not a
+  # cloud-only hack.
   coordinator:
     jvm:
       maxHeapSize: "2G"
@@ -91,7 +102,7 @@ values:
     resources:
       requests:
         cpu: "500m"
-        memory: "2560Mi"
+        memory: "2304Mi"
   worker:
     jvm:
       maxHeapSize: "2G"
@@ -100,7 +111,7 @@ values:
     resources:
       requests:
         cpu: "500m"
-        memory: "2560Mi"
+        memory: "2304Mi"
   server:
     workers: 1
   # catalogs: is the chart's own top-level mechanism for Trino catalog properties (one entry per
