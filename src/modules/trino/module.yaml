@@ -114,6 +114,19 @@ values:
         memory: "2304Mi"
   server:
     workers: 1
+  # 2026-09-15: proxying into Trino's UI/API through the gateway's module-proxy (item 8's
+  # mechanism) failed with HTTP 406 "Server configuration does not allow processing of the
+  # x-forwarded-scheme header" — Jetty's RejectForwardedRequestCustomizer, which Trino's
+  # http-server module enables by default specifically to reject unsolicited X-Forwarded-*
+  # headers unless the operator has explicitly opted in (trino.io/docs/current/admin/
+  # properties-http-server.html: `http-server.process-forwarded`, default false — "commonly
+  # performed by a load balancer that terminates HTTPS to HTTP", which is exactly what the
+  # gateway module-proxy does here). additionalConfigProperties is the chart's own top-level
+  # mechanism (charts/trino/values.yaml) for injecting raw config.properties lines into both
+  # coordinator and worker — confirmed against the chart's published values docs, not guessed,
+  # same discipline as everything else in this file.
+  additionalConfigProperties:
+    - http-server.process-forwarded=true
   # catalogs: is the chart's own top-level mechanism for Trino catalog properties (one entry per
   # catalog, raw Trino .properties text — see charts/trino/values.yaml's own `catalogs:` key).
   # ${ENV:VAR} is Trino's own native secrets substitution (trino.io docs, "Secrets"), independent
