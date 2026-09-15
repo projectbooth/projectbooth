@@ -54,12 +54,30 @@ values:
   # matching this repo's SealedSecrets-everywhere discipline even though this is a module, not a
   # core app.
   catalogs:
+    # 2026-09-15: first live install against homelab-dev crash-looped both coordinator and workers
+    # on startup — io.trino.server.Server rejected the config with 3 errors, all from
+    # IcebergJdbcCatalogConfig: catalog-name/driver-class/default-warehouse-dir are REQUIRED
+    # properties this original draft omitted (confirmed against Trino's own docs,
+    # trino.io/docs/current/object-storage/metastores.html, "Iceberg JDBC catalog" — not guessed
+    # this time). driver-class=org.postgresql.Driver needs no extra plugin jar: PostgreSQL is the
+    # one JDBC driver this connector bundles, every other database requires manually placing a
+    # driver jar in the plugin directory. catalog-name is just a label the JDBC metastore schema
+    # uses internally — "iceberg" to match this catalogs: entry's own key, nothing else depends on
+    # the value matching. default-warehouse-dir needs an S3 bucket that actually exists — the
+    # `trino-warehouse` bucket below does NOT exist yet as of this fix; SeaweedFS doesn't
+    # auto-create buckets (see seaweedfs.yaml's own comment — bucket creation is deliberately
+    # handled by whatever consumer needs one, the way postgres-backup.yaml's Job does for its own
+    # bucket). Iceberg won't actually be able to CREATE SCHEMA/TABLE until that bucket exists —
+    # tracked as its own step before the real-query verification, not blocking this startup fix.
     iceberg: |
       connector.name=iceberg
       iceberg.catalog.type=jdbc
+      iceberg.jdbc-catalog.catalog-name=iceberg
+      iceberg.jdbc-catalog.driver-class=org.postgresql.Driver
       iceberg.jdbc-catalog.connection-url=jdbc:postgresql://platform-postgres-rw.postgres.svc:5432/trino_catalog
       iceberg.jdbc-catalog.connection-user=trino
       iceberg.jdbc-catalog.connection-password=${ENV:TRINO_DB_PASSWORD}
+      iceberg.jdbc-catalog.default-warehouse-dir=s3://trino-warehouse
       fs.native-s3.enabled=true
       s3.endpoint=http://storage-seaweedfs-s3.storage-seaweedfs.svc:8333
       s3.path-style-access=true
