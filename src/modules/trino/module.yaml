@@ -129,20 +129,32 @@ values:
     # Trino's own current docs (trino.io/docs/current/object-storage/file-system-s3.html, fetched
     # fresh just now, not recalled from memory — this repo already got burned once this same day by
     # trusting an unverified property name): two things were actually wrong, not one.
-    #  1. The property that turns on the native S3 filesystem implementation is `fs.s3.enabled`, not
-    #     `fs.native-s3.enabled` — the docs state that literal property name verbatim. The old
-    #     property name isn't one this connector recognizes, so it was silently ignored rather than
-    #     rejected (Trino's catalog-property validation doesn't appear to hard-fail on an unused key
-    #     the way IcebergJdbcCatalogConfig did on a missing required one) — which is exactly why the
-    #     earlier "no Configuration errors" log check looked clean: the S3 support this catalog
-    #     actually needs was never really enabled.
+    #  1. [SUPERSEDED — see correction below] believed at the time to be `fs.s3.enabled` rather than
+    #     `fs.native-s3.enabled`, sourced from a fetch of trino.io/docs/current. That was wrong for
+    #     this pinned version — see the 2026-09-15 (correction) note.
     #  2. `s3.region` is a real, separate property (docs: "S3 region to communicate with") that this
     #     draft never set at all. Against a real AWS S3 endpoint the SDK can often infer a region;
     #     against SeaweedFS there's no EC2 metadata service, no ~/.aws/config, no AWS_REGION env var
     #     for SystemSettingsRegionProvider to find anything — nothing for the SDK's default region
     #     chain to resolve, which throws SdkClientException. SeaweedFS itself ignores the region value
     #     (routing is entirely via s3.endpoint/s3.path-style-access above) — set to a placeholder
-    #     AWS-shaped value purely so the SDK's client builder has something to resolve.
+    #     AWS-shaped value purely so the SDK's client builder has something to resolve. This part held
+    #     up — kept below.
+    # 2026-09-15 (correction, minutes later): item 1 above was wrong, and not a harmless wrong —
+    # deploying it made things worse: the coordinator log showed
+    # `io.airlift.bootstrap.ApplicationConfigurationException: Configuration property 'fs.s3.enabled'
+    # was not used`, and every other s3.* property alongside it, all "not used" — Trino 480 doesn't
+    # bind ANY of this catalog's S3 properties unless it first recognizes the enable-flag's exact
+    # name, so getting that one property name wrong silently disables the whole s3.* block. The
+    # original `fs.native-s3.enabled` never produced this error in any earlier log — proof (from the
+    # live binary actually running, which beats any doc fetch) that it was the right name for this
+    # pinned chart/appVersion (480) all along, and `trino.io/docs/current` was reflecting a newer
+    # Trino release's renamed property, not 480's. Lesson for future edits to this file: when a live
+    # config-validation error disagrees with a docs fetch, trust the running binary — "current" docs
+    # track the latest release, not whatever version is actually pinned here. Reverted to the
+    # original, empirically-correct property name; kept `s3.region` since nothing in this latest error
+    # contradicts it (its own line was only "not used" as a side effect of the enable-flag being
+    # unrecognized, not because `s3.region` itself is wrong).
     iceberg: |
       connector.name=iceberg
       iceberg.catalog.type=jdbc
@@ -152,7 +164,7 @@ values:
       iceberg.jdbc-catalog.connection-user=trino
       iceberg.jdbc-catalog.connection-password=${ENV:TRINO_DB_PASSWORD}
       iceberg.jdbc-catalog.default-warehouse-dir=s3://trino-warehouse
-      fs.s3.enabled=true
+      fs.native-s3.enabled=true
       s3.endpoint=http://storage-seaweedfs-s3.storage-seaweedfs.svc:8333
       s3.region=us-east-1
       s3.path-style-access=true
