@@ -237,6 +237,42 @@ def test_proxy_forwards_headers_derived_from_the_token_not_the_request(sign_prox
 
 
 @respx.mock
+def test_proxy_strips_x_forwarded_headers(sign_proxy_token, mounted_sa):
+    # 2026-09-15, live Trino verification: ingress-nginx sets X-Forwarded-For/-Proto/-Host on the
+    # request gateway receives; without stripping them here they were being copied onto the brand-new
+    # httpx request this route builds (not a continuation of the inbound one) — harmless against
+    # hello-module here, but Trino's real coordinator (Airlift/Jetty) 406s any request carrying an
+    # X-Forwarded-* header it isn't explicitly configured to trust, which is exactly what live
+    # verification hit. Regression test for that fix, not hello-module-specific.
+    token = sign_proxy_token("hello-module")
+    _mock_k8s([_application("hello-module")])
+    module_route = respx.get(f"{MODULE_BASE}/").mock(return_value=httpx.Response(200, text="ok"))
+
+    with TestClient(app) as client:
+        response = client.get(
+            f"/modules/hello-module/proxy?token={token}",
+            headers={
+                "X-Forwarded-For": "203.0.113.1",
+                "X-Forwarded-Proto": "https",
+                "X-Forwarded-Host": "app.platform.local",
+                "X-Forwarded-Port": "443",
+                "Forwarded": "for=203.0.113.1;proto=https",
+            },
+        )
+
+    assert response.status_code == 200
+    sent = module_route.calls.last.request
+    for header in (
+        "x-forwarded-for",
+        "x-forwarded-proto",
+        "x-forwarded-host",
+        "x-forwarded-port",
+        "forwarded",
+    ):
+        assert header not in sent.headers
+
+
+@respx.mock
 def test_proxy_strips_the_token_query_param_but_forwards_others(sign_proxy_token, mounted_sa):
     token = sign_proxy_token("hello-module")
     _mock_k8s([_application("hello-module")])

@@ -288,11 +288,35 @@ async def _proxy_module_request(module_id: str, path: str, request: Request):
     # stripped here for the same reason `token` is stripped from outbound_params below: it's gateway's
     # own internal auth artifact for THIS route, never something the module's own backend should ever
     # see forwarded to it.
+    #
+    # 2026-09-15 (Trino live-verification): also strip X-Forwarded-*/Forwarded. ingress-nginx sets
+    # X-Forwarded-For/-Proto/-Host on the INCOMING request to gateway; without this exclusion those
+    # were being copied verbatim onto the httpx request this function builds — but that request is a
+    # brand new one gateway itself originates, not a continuation of the inbound one, and gateway
+    # never fills in its own hop's IP the way a real forwarding proxy would. Harmless against
+    # hello-module (a static page that ignores headers it doesn't understand), but Trino's coordinator
+    # (Airlift/Jetty) has a strict `RejectForwardedRequestCustomizer` that 406s any request carrying an
+    # X-Forwarded-* header unless `http-server.process-forwarded=true` is explicitly configured to
+    # trust it — a secure default against forwarded-header spoofing, not a bug in Trino. Configuring
+    # every external-chart module's backend to trust gateway would be a narrower, more fragile fix
+    # (opt-in per module, easy to forget, and weakens that module's own spoofing protection); stripping
+    # these here instead means gateway always presents itself as a plain direct client to the module's
+    # backend, which is the correct general behavior for this mechanism regardless of which module or
+    # backend framework is on the other end.
     _client_supplied_auth_headers = {"authorization", "x-workspace", "x-user", "x-role", "cookie"}
+    _forwarded_headers = {
+        "x-forwarded-for",
+        "x-forwarded-proto",
+        "x-forwarded-host",
+        "x-forwarded-port",
+        "forwarded",
+    }
     outbound_headers = {
         key: value
         for key, value in request.headers.items()
-        if key.lower() not in _HOP_BY_HOP_HEADERS and key.lower() not in _client_supplied_auth_headers
+        if key.lower() not in _HOP_BY_HOP_HEADERS
+        and key.lower() not in _client_supplied_auth_headers
+        and key.lower() not in _forwarded_headers
     }
     outbound_headers.update(derived.as_headers())
 
