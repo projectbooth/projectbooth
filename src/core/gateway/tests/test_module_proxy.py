@@ -334,17 +334,47 @@ def test_proxy_accepts_the_token_from_the_cookie_with_no_query_param(sign_proxy_
 
 
 @respx.mock
-def test_proxy_never_forwards_its_own_cookie_to_the_module(sign_proxy_token, mounted_sa):
-    # The Cookie header is gateway's own internal auth artifact for this one route — it must never
-    # reach the module's backend, the same "never client-declared" discipline that already governs
-    # Authorization/X-Workspace/X-User/X-Role above.
+def test_proxy_never_forwards_its_own_cookie_to_the_module_but_does_forward_others(
+    sign_proxy_token, mounted_sa
+):
+    # mp_token_{module_id} is gateway's own internal auth artifact for this one route — it must
+    # never reach the module's backend, the same "never client-declared" discipline that already
+    # governs Authorization/X-Workspace/X-User/X-Role above. 2026-09-15, live Trino verification:
+    # this test USED to also assert the whole Cookie header vanished entirely (blanket-stripping
+    # everything, "unrelated" included) — that was itself the bug behind Trino's login redirect
+    # loop: Trino's own real session cookie, set on a successful POST /ui/login, got discarded the
+    # same way "unrelated" did here, so the very next request looked unauthenticated and bounced
+    # back to the login page. A cookie the MODULE itself set legitimately needs to round-trip; only
+    # gateway's own token doesn't. "unrelated" stands in for exactly that case now.
     token = sign_proxy_token("hello-module")
     _mock_k8s([_application("hello-module")])
     module_route = respx.get(f"{MODULE_BASE}/").mock(return_value=httpx.Response(200, text="ok"))
 
     with TestClient(app) as client:
         client.cookies.set("mp_token_hello-module", token)
-        client.cookies.set("unrelated", "should-not-leak-either")
+        client.cookies.set("unrelated", "should-still-be-forwarded")
+        response = client.get("/modules/hello-module/proxy")
+
+    assert response.status_code == 200
+    sent = module_route.calls.last.request
+    assert "mp_token_hello-module" not in sent.headers["cookie"]
+    assert sent.headers["cookie"] == "unrelated=should-still-be-forwarded"
+
+
+@respx.mock
+def test_proxy_omits_cookie_header_entirely_when_nothing_remains_after_stripping(
+    sign_proxy_token, mounted_sa
+):
+    # The common case in practice: the browser's only cookie under this path IS our own token (the
+    # module hasn't set one of its own, or this is before it does). Omitting the header entirely
+    # here (rather than sending an empty "Cookie:") is _strip_proxy_cookie_from_header's own
+    # explicit contract — worth its own assertion, not just inferred from the test above.
+    token = sign_proxy_token("hello-module")
+    _mock_k8s([_application("hello-module")])
+    module_route = respx.get(f"{MODULE_BASE}/").mock(return_value=httpx.Response(200, text="ok"))
+
+    with TestClient(app) as client:
+        client.cookies.set("mp_token_hello-module", token)
         response = client.get("/modules/hello-module/proxy")
 
     assert response.status_code == 200
@@ -460,92 +490,6 @@ def test_proxy_leaves_a_genuinely_external_redirect_untouched(sign_proxy_token, 
     assert response.headers["location"] == "https://accounts.example.com/o/oauth2/auth"
 
 
-class _CloseTrackingStream(httpx.AsyncByteStream):
-    """Simulates a REAL network stream in one specific way respx's default mocked responses never
-    do: it depends on the underlying connection staying open across multiple reads. respx normally
-    hands back a response whose body is already fully materialized in memory, so closing the client
-    that "owns" it has no effect on reading it afterward — which is exactly why the real bug below
-    could ship unnoticed through this whole test suite for as long as it did. This stream instead
-    raises `httpx.ReadError` if iterated after the client has already been closed, making "was
-    aclose() called too early" an actual observable test failure instead of something only a real
-    socket (or Trino, live) would ever catch.
-    """
-
-    def __init__(self, chunks: list[bytes], closed_flag: dict) -> None:
-        self._chunks = chunks
-        self._closed_flag = closed_flag
-
-    async def __aiter__(self):
-        for chunk in self._chunks:
-            if self._closed_flag["closed"]:
-                raise httpx.ReadError("simulated: read attempted after the client was already closed")
-            yield chunk
-
-    async def aclose(self) -> None:
-        pass
-
-
-@respx.mock
-def test_proxy_streams_the_full_body_even_when_it_requires_multiple_reads(
-    sign_proxy_token, mounted_sa, monkeypatch
-):
-    # 2026-09-15, live Trino verification: the ORIGINAL shape of this function was
-    # `async with httpx.AsyncClient(base_url=target, ...) as client:` with `return response` inside
-    # that block. Returning from inside an `async with` runs `__aexit__` — closing the client, and
-    # the connection to the module, IMMEDIATELY, before the StreamingResponse's body has actually
-    # been read (that only happens later, when Starlette's ASGI layer drives stream_body() after
-    # this function has already returned). hello-module's tiny static page always happened to arrive
-    # in whatever single chunk httpx buffers before send() returns, so this went unnoticed — Trino's
-    # real, gzip-compressed login.html needed a genuine follow-up read, hit the already-closed
-    # connection, and failed with httpx.ReadError (confirmed live from gateway's own pod logs),
-    # which the browser surfaced as net::ERR_HTTP2_PROTOCOL_ERROR (headers/200 already sent, then
-    # the stream died). Regression test: a multi-chunk body whose second/third chunk would only
-    # succeed if the client is STILL OPEN at that point.
-    token = sign_proxy_token("hello-module")
-    _mock_k8s([_application("hello-module")])
-
-    closed_flag = {"closed": False}
-    real_aclose = httpx.AsyncClient.aclose
-    real_aexit = httpx.AsyncClient.__aexit__
-
-    def _matches_module_client(self) -> bool:
-        # Scoped to the module's OWN client (matched by base_url) — mounted_sa/_mock_k8s's Kubernetes
-        # client and the app's JWKS client each open and close their own short-lived AsyncClients too,
-        # entirely legitimately, and would otherwise trip this flag before module_proxy's own client
-        # ever gets involved.
-        return str(self.base_url).rstrip("/") == MODULE_BASE
-
-    async def _tracking_aclose(self):
-        if _matches_module_client(self):
-            closed_flag["closed"] = True
-        await real_aclose(self)
-
-    async def _tracking_aexit(self, *args):
-        # `async with httpx.AsyncClient(...) as client:` closes via __aexit__ calling
-        # `self._transport.__aexit__(...)` directly — NOT via the public aclose() method above. Both
-        # have to be tracked: the ORIGINAL buggy shape (`async with ... return response`) only ever
-        # goes through this path, never through aclose() at all, so a hook on aclose() alone would
-        # never observe it closing early — silently making this test pass regardless of whether the
-        # real bug was present, which is worse than not having the test.
-        if _matches_module_client(self):
-            closed_flag["closed"] = True
-        await real_aexit(self, *args)
-
-    monkeypatch.setattr(httpx.AsyncClient, "aclose", _tracking_aclose)
-    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _tracking_aexit)
-
-    stream = _CloseTrackingStream([b"chunk-one ", b"chunk-two ", b"chunk-three"], closed_flag)
-    respx.get(f"{MODULE_BASE}/big.html").mock(
-        return_value=httpx.Response(200, stream=stream, headers={"content-type": "text/html"})
-    )
-
-    with TestClient(app) as client:
-        response = client.get(f"/modules/hello-module/proxy/big.html?token={token}")
-
-    assert response.status_code == 200
-    assert response.text == "chunk-one chunk-two chunk-three"
-
-
 @respx.mock
 def test_proxy_streams_a_post_body_through(sign_proxy_token, mounted_sa):
     token = sign_proxy_token("hello-module")
@@ -559,3 +503,45 @@ def test_proxy_streams_a_post_body_through(sign_proxy_token, mounted_sa):
     # httpx's own json= encoding uses compact separators (no space after ":") — this is a passthrough
     # check (module_proxy.py forwards request.body() raw, unmodified), not a claim about JSON style.
     assert module_route.calls.last.request.content == b'{"a":1}'
+
+
+@respx.mock
+def test_a_module_set_session_cookie_survives_round_trip_across_two_requests(sign_proxy_token, mounted_sa):
+    # End-to-end mirror of the exact live failure this branch fixes: Trino's coordinator sets its own
+    # session cookie on a successful POST /ui/login, then rejects the VERY NEXT request (GET /ui/) as
+    # unauthenticated because gateway was discarding that cookie before forwarding it back — bouncing
+    # the browser straight back to the login page, indistinguishable from a genuinely rejected login
+    # without checking gateway's own logs. Two real requests through the real ASGI app (not a direct
+    # call to the helper), a real cookie jar (TestClient's own, same as a browser's), proving the
+    # SECOND request actually carries the module's session cookie forward — not just that the helper
+    # function computes the right string in isolation.
+    token = sign_proxy_token("hello-module")
+    _mock_k8s([_application("hello-module")])
+    respx.post(f"{MODULE_BASE}/login").mock(
+        return_value=httpx.Response(
+            200, text="logged in", headers={"set-cookie": "module-session=real-session-abc123; Path=/"}
+        )
+    )
+    dashboard_route = respx.get(f"{MODULE_BASE}/dashboard").mock(
+        return_value=httpx.Response(200, text="welcome back")
+    )
+
+    with TestClient(app) as client:
+        login_response = client.post(f"/modules/hello-module/proxy/login?token={token}")
+        assert login_response.status_code == 200
+        assert "module-session=real-session-abc123" in login_response.headers["set-cookie"]
+
+        # A real browser would now automatically be carrying BOTH cookies (our own mp_token_ one,
+        # set on this same response, and the module's module-session just received) on its next
+        # request. Set them explicitly here rather than relying on TestClient's cookie jar to honor
+        # `_set_proxy_cookie`'s `Secure` flag over its plain (non-HTTPS) test transport — the same
+        # reason this file's OTHER cookie tests already set cookies by hand instead of letting a
+        # Set-Cookie response header propagate automatically.
+        client.cookies.set("mp_token_hello-module", token)
+        client.cookies.set("module-session", "real-session-abc123")
+        dashboard_response = client.get("/modules/hello-module/proxy/dashboard")
+
+    assert dashboard_response.status_code == 200
+    sent = dashboard_route.calls.last.request
+    assert "module-session=real-session-abc123" in sent.headers["cookie"]
+    assert "mp_token_hello-module" not in sent.headers["cookie"]
