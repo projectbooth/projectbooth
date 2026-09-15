@@ -22,7 +22,7 @@ spec:
   # deliberately bootstrap from a different branch than dev (see
   # docs/known-issues.md).
   source:
-    repoURL: git@github.com:DougallPercival/opendataplatform.git
+    repoURL: git@github.com:projectbooth/projectbooth.git
     targetRevision: dev
     path: src/core/argocd/manifests
     directory:

@@ -36,7 +36,7 @@ spec:
   # root-app.yaml, never the files under apps/, which Argo CD reads straight
   # from git with no templating of its own.
   source:
-    repoURL: git@github.com:DougallPercival/opendataplatform.git
+    repoURL: git@github.com:projectbooth/projectbooth.git
     targetRevision: dev
     path: src/core/argocd/manifests
     directory:
