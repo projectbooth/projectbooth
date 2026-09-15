@@ -460,6 +460,92 @@ def test_proxy_leaves_a_genuinely_external_redirect_untouched(sign_proxy_token, 
     assert response.headers["location"] == "https://accounts.example.com/o/oauth2/auth"
 
 
+class _CloseTrackingStream(httpx.AsyncByteStream):
+    """Simulates a REAL network stream in one specific way respx's default mocked responses never
+    do: it depends on the underlying connection staying open across multiple reads. respx normally
+    hands back a response whose body is already fully materialized in memory, so closing the client
+    that "owns" it has no effect on reading it afterward — which is exactly why the real bug below
+    could ship unnoticed through this whole test suite for as long as it did. This stream instead
+    raises `httpx.ReadError` if iterated after the client has already been closed, making "was
+    aclose() called too early" an actual observable test failure instead of something only a real
+    socket (or Trino, live) would ever catch.
+    """
+
+    def __init__(self, chunks: list[bytes], closed_flag: dict) -> None:
+        self._chunks = chunks
+        self._closed_flag = closed_flag
+
+    async def __aiter__(self):
+        for chunk in self._chunks:
+            if self._closed_flag["closed"]:
+                raise httpx.ReadError("simulated: read attempted after the client was already closed")
+            yield chunk
+
+    async def aclose(self) -> None:
+        pass
+
+
+@respx.mock
+def test_proxy_streams_the_full_body_even_when_it_requires_multiple_reads(
+    sign_proxy_token, mounted_sa, monkeypatch
+):
+    # 2026-09-15, live Trino verification: the ORIGINAL shape of this function was
+    # `async with httpx.AsyncClient(base_url=target, ...) as client:` with `return response` inside
+    # that block. Returning from inside an `async with` runs `__aexit__` — closing the client, and
+    # the connection to the module, IMMEDIATELY, before the StreamingResponse's body has actually
+    # been read (that only happens later, when Starlette's ASGI layer drives stream_body() after
+    # this function has already returned). hello-module's tiny static page always happened to arrive
+    # in whatever single chunk httpx buffers before send() returns, so this went unnoticed — Trino's
+    # real, gzip-compressed login.html needed a genuine follow-up read, hit the already-closed
+    # connection, and failed with httpx.ReadError (confirmed live from gateway's own pod logs),
+    # which the browser surfaced as net::ERR_HTTP2_PROTOCOL_ERROR (headers/200 already sent, then
+    # the stream died). Regression test: a multi-chunk body whose second/third chunk would only
+    # succeed if the client is STILL OPEN at that point.
+    token = sign_proxy_token("hello-module")
+    _mock_k8s([_application("hello-module")])
+
+    closed_flag = {"closed": False}
+    real_aclose = httpx.AsyncClient.aclose
+    real_aexit = httpx.AsyncClient.__aexit__
+
+    def _matches_module_client(self) -> bool:
+        # Scoped to the module's OWN client (matched by base_url) — mounted_sa/_mock_k8s's Kubernetes
+        # client and the app's JWKS client each open and close their own short-lived AsyncClients too,
+        # entirely legitimately, and would otherwise trip this flag before module_proxy's own client
+        # ever gets involved.
+        return str(self.base_url).rstrip("/") == MODULE_BASE
+
+    async def _tracking_aclose(self):
+        if _matches_module_client(self):
+            closed_flag["closed"] = True
+        await real_aclose(self)
+
+    async def _tracking_aexit(self, *args):
+        # `async with httpx.AsyncClient(...) as client:` closes via __aexit__ calling
+        # `self._transport.__aexit__(...)` directly — NOT via the public aclose() method above. Both
+        # have to be tracked: the ORIGINAL buggy shape (`async with ... return response`) only ever
+        # goes through this path, never through aclose() at all, so a hook on aclose() alone would
+        # never observe it closing early — silently making this test pass regardless of whether the
+        # real bug was present, which is worse than not having the test.
+        if _matches_module_client(self):
+            closed_flag["closed"] = True
+        await real_aexit(self, *args)
+
+    monkeypatch.setattr(httpx.AsyncClient, "aclose", _tracking_aclose)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _tracking_aexit)
+
+    stream = _CloseTrackingStream([b"chunk-one ", b"chunk-two ", b"chunk-three"], closed_flag)
+    respx.get(f"{MODULE_BASE}/big.html").mock(
+        return_value=httpx.Response(200, stream=stream, headers={"content-type": "text/html"})
+    )
+
+    with TestClient(app) as client:
+        response = client.get(f"/modules/hello-module/proxy/big.html?token={token}")
+
+    assert response.status_code == 200
+    assert response.text == "chunk-one chunk-two chunk-three"
+
+
 @respx.mock
 def test_proxy_streams_a_post_body_through(sign_proxy_token, mounted_sa):
     token = sign_proxy_token("hello-module")
