@@ -58,12 +58,45 @@ values:
   # any exception). Sized down to fit: 2G heap each, one worker instead of two — proves the real
   # coordinator+worker architecture without trying to run a production-sized footprint on a single
   # homelab box. Revisit once this cluster has more than one node (ARCHITECTURE.md §6/§7).
+  # 2026-09-15 (later same day): the heap/worker-count fix above got config validation passing and
+  # stopped the JVM-exception class of crash, but pods kept restarting anyway — `kubectl describe pod`
+  # on the crashing coordinator showed `Last State: Terminated, Reason: Error, Exit Code: 143` (SIGTERM,
+  # not 137/OOMKilled — this is NOT a memory kill) at almost exactly 130s of uptime, every single time
+  # (152 restarts). 143 is kubelet's own signal after a startupProbe exhausts its failureThreshold — the
+  # chart's own defaults (confirmed against https://trinodb.github.io/charts/charts/trino/, not guessed:
+  # coordinator/worker.startupProbe.initialDelaySeconds=10, periodSeconds=2, failureThreshold=60) give
+  # Trino exactly 10 + 60*2 = 130s to pass the startup health-check once before kubelet kills the
+  # container and retries — matching the observed cycle exactly. On this single, already-contended node
+  # (see comment above; also two ReplicaSet generations were briefly coexisting and competing for the
+  # same scarce CPU during the earlier heap-size rollout) Trino's JVM simply needs longer than 130s to
+  # finish starting. Two independent fixes, both needed:
+  #  1. Widen the startup budget well past what's been observed to fail (130s) — raised to
+  #     10 + 180*2 = 370s per coordinator/worker, using the chart's own startupProbe.failureThreshold
+  #     field (values.yaml key path confirmed against the chart docs above), not a guess at some other
+  #     field name.
+  #  2. This pod had QoS class BestEffort (no resources: block at all) — meaning kubelet gives it zero
+  #     scheduling priority against any other pod on the node, including another crash-looping generation
+  #     of itself. Explicit `resources.requests` (still no `limits`, so this can't newly OOM-kill anything
+  #     that wasn't already at risk) moves it to Burstable QoS, which is what actually gets it a fair CPU
+  #     share while starting instead of being starved by whatever else is running.
   coordinator:
     jvm:
       maxHeapSize: "2G"
+    startupProbe:
+      failureThreshold: 180
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "2560Mi"
   worker:
     jvm:
       maxHeapSize: "2G"
+    startupProbe:
+      failureThreshold: 180
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "2560Mi"
   server:
     workers: 1
   # catalogs: is the chart's own top-level mechanism for Trino catalog properties (one entry per
