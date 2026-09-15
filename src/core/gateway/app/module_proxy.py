@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import AsyncIterator
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 import jwt
@@ -170,6 +171,39 @@ def _set_proxy_cookie(response: StreamingResponse, module_id: str, token: str, e
         httponly=True,
         secure=True,
         samesite="none",
+    )
+
+
+def _rewrite_redirect_location(location: str, module_id: str, target: str, request_path: str) -> str:
+    """2026-09-15 (Trino live-verification, first real multi-page-UI module through this proxy):
+    `GET /` on Trino's coordinator 303s to `/ui/` — and Trino, having no idea it's sitting behind a
+    reverse proxy, builds that redirect as the FULL absolute URL it thinks is its own address:
+    `http://trino.trino.svc:8080/ui/` (confirmed live via DevTools' Network tab, not guessed). Passed
+    straight through (this route's prior behavior — see the streaming-response block below, which
+    forwards every upstream header sanitize_frame_headers doesn't already touch), the browser tries
+    to navigate the iframe directly to that cluster-internal DNS name, which it can never resolve —
+    the iframe just goes blank, no visible error anywhere (not even a browser-rendered error page
+    inside the frame, in this case — it's a plain navigation failure). A module returning a
+    path-absolute Location (e.g. bare `/ui/`, no scheme/host) would have a different but similarly
+    broken failure mode: the browser resolves that against the CURRENT origin (gateway's), landing on
+    `https://gateway.platform.local/ui/` — a path gateway has no route for at all.
+
+    Fix: resolve whatever the module returned against the SAME base URL the outbound request was
+    actually just made to (target + request_path) — `urljoin` handles a full absolute URL, a
+    path-absolute one, and a plain relative one uniformly, so this doesn't need three separate cases.
+    Then, ONLY if that resolves back to the module's own host (i.e. this really was the module
+    pointing at itself, not a genuine external redirect — an OAuth provider, say — that should pass
+    through untouched), strip it back down to bare path+query and re-prefix it under this route's own
+    `/modules/{module_id}/proxy` path, so the browser's follow-up request comes back through the
+    proxy instead of escaping it.
+    """
+    resolved = urljoin(f"{target.rstrip('/')}/{request_path}", location)
+    target_parts = urlsplit(target)
+    resolved_parts = urlsplit(resolved)
+    if (resolved_parts.scheme, resolved_parts.netloc) != (target_parts.scheme, target_parts.netloc):
+        return location
+    return urlunsplit(
+        ("", "", f"/modules/{module_id}/proxy{resolved_parts.path or '/'}", resolved_parts.query, "")
     )
 
 
@@ -346,6 +380,13 @@ async def _proxy_module_request(module_id: str, path: str, request: Request):
                 if key.lower() not in _HOP_BY_HOP_HEADERS
             }
         )
+
+        if 300 <= upstream_response.status_code < 400:
+            for key in list(response_headers):
+                if key.lower() == "location":
+                    response_headers[key] = _rewrite_redirect_location(
+                        response_headers[key], module_id, target, path
+                    )
 
         async def stream_body() -> AsyncIterator[bytes]:
             try:
