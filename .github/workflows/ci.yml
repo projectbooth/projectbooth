@@ -171,7 +171,7 @@ jobs:
       # referencing Argo CD Application (src/core/argocd/README.md) — if
       # you fork this repo and want your own images, this is the other
       # value you change, alongside repoURL.
-      IMAGE_NAME: ghcr.io/dougallpercival/catalog-service
+      IMAGE_NAME: ghcr.io/projectbooth/catalog-service
     steps:
       # fetch-depth: 0 (full history, not the default shallow depth-1) — the "Record this build's
       # commit SHA" step below may need to `git fetch`/`rebase` against a newer remote tip if a
@@ -232,7 +232,7 @@ jobs:
           # private on first publish" entry for the one manual step still
           # needed after this workflow's first successful run.
           labels: |
-            org.opencontainers.image.source=https://github.com/DougallPercival/opendataplatform
+            org.opencontainers.image.source=https://github.com/projectbooth/projectbooth
           cache-from: type=gha
           cache-to: type=gha,mode=max
       # 2026-09-11, fixing docs/known-issues.md's recurring stale-pod gotcha: `:dev` is a moving
@@ -324,7 +324,7 @@ jobs:
     env:
       # Same hardcoded-lowercase reasoning as build-and-push's IMAGE_NAME
       # above — see that job's own comment.
-      IMAGE_NAME: ghcr.io/dougallpercival/gateway
+      IMAGE_NAME: ghcr.io/projectbooth/gateway
     steps:
       - uses: actions/checkout@v4
         with:
@@ -380,7 +380,7 @@ jobs:
             && format('{0}:{1}', env.IMAGE_NAME, github.ref_name)
             || format('{0}:pr-{1}', env.IMAGE_NAME, github.event.pull_request.number) }}
           labels: |
-            org.opencontainers.image.source=https://github.com/DougallPercival/opendataplatform
+            org.opencontainers.image.source=https://github.com/projectbooth/projectbooth
           cache-from: type=gha
           cache-to: type=gha,mode=max
       # Same mechanism as build-and-push's own identical step above (see that job's own long
@@ -451,7 +451,7 @@ jobs:
     env:
       # Same hardcoded-lowercase reasoning as build-and-push's IMAGE_NAME
       # above — see that job's own comment.
-      IMAGE_NAME: ghcr.io/dougallpercival/ui-shell
+      IMAGE_NAME: ghcr.io/projectbooth/ui-shell
     steps:
       - uses: actions/checkout@v4
         with:
@@ -477,7 +477,7 @@ jobs:
             && format('{0}:{1}', env.IMAGE_NAME, github.ref_name)
             || format('{0}:pr-{1}', env.IMAGE_NAME, github.event.pull_request.number) }}
           labels: |
-            org.opencontainers.image.source=https://github.com/DougallPercival/opendataplatform
+            org.opencontainers.image.source=https://github.com/projectbooth/projectbooth
           cache-from: type=gha
           cache-to: type=gha,mode=max
       # Same mechanism as build-and-push's own identical step above (see that job's own long
