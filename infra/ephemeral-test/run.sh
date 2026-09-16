@@ -156,7 +156,27 @@ EOF
 info "Copying the deploy key up and cloning ${GH_REPO}@${REVISION}..."
 scp -i "$ACCESS_KEY_FILE" -o StrictHostKeyChecking=accept-new "$DEPLOY_KEY_FILE" "root@${DROPLET_IP}:/root/deploy_key"
 ssh_droplet "chmod 600 /root/deploy_key"
-ssh_droplet "export GIT_SSH_COMMAND='ssh -i /root/deploy_key -o StrictHostKeyChecking=accept-new'; apt-get update -qq && apt-get install -y -qq git >/dev/null && git clone --quiet --branch '${REVISION}' '${REPO_URL}' /root/projectbooth"
+# 2026-09-16, hit live: a freshly booted DO droplet image runs its own background apt activity
+# (cloud-init's own package steps, unattended-upgrades) for a short window right after boot — SSHing
+# in immediately and running apt-get, which is exactly what this step does, has a real chance of
+# landing right in that window and dying with "Could not get lock /var/lib/dpkg/lock-frontend"
+# (confirmed live, not a guess). That's a transient race, not a real failure, but the ORIGINAL shape
+# here (`apt-get update && apt-get install ... && git clone`, no retry) let it kill the whole script
+# via set -e the instant it happened, five-plus minutes into a run (droplet boot, deploy key
+# registration) — wasteful to just restart from scratch for something that clears itself in well
+# under a minute. Retrying the apt-get portion (not the whole ssh_droplet call — git clone only
+# needs to run once, after apt-get actually succeeds) for up to 150s fixes this without touching
+# anything else about the flow.
+ssh_droplet "
+  export GIT_SSH_COMMAND='ssh -i /root/deploy_key -o StrictHostKeyChecking=accept-new'
+  for i in \$(seq 1 30); do
+    apt-get update -qq && apt-get install -y -qq git >/dev/null && break
+    echo 'apt lock busy (likely cloud-init/unattended-upgrades on a freshly booted droplet) — retrying in 5s...' >&2
+    sleep 5
+  done
+  command -v git >/dev/null || { echo 'git never became installable after 150s — the apt lock never cleared.' >&2; exit 1; }
+  git clone --quiet --branch '${REVISION}' '${REPO_URL}' /root/projectbooth
+"
 success "Cloned onto the droplet."
 
 info "Running bootstrap/install.sh on the droplet — this takes several minutes (full platform: Postgres, Keycloak, SeaweedFS, gateway, ui-shell, Argo CD). Streaming output:"
@@ -228,7 +248,18 @@ success "Gateway secrets provisioned for this cluster."
 # from whatever you're using for browser access) stand in for both, entirely inside one ssh_droplet
 # call so the port-forward's lifetime is naturally scoped to just this one setup step.
 info "Provisioning ui-shell's Keycloak OAuth client..."
-ssh_droplet "apt-get update -qq && apt-get install -y -qq jq >/dev/null"
+# Same transient dpkg-lock race the git install above can hit — see that call site's own comment.
+# Far less likely to actually land here (several minutes of bootstrap/install.sh have run by this
+# point, well past a freshly booted droplet's own background apt window), but cheap enough to guard
+# the same way rather than leave one of the two apt-get calls in this script unprotected.
+ssh_droplet "
+  for i in \$(seq 1 30); do
+    apt-get update -qq && apt-get install -y -qq jq >/dev/null && break
+    echo 'apt lock busy — retrying in 5s...' >&2
+    sleep 5
+  done
+  command -v jq >/dev/null || { echo 'jq never became installable after 150s — the apt lock never cleared.' >&2; exit 1; }
+"
 ssh_droplet "grep -q 'keycloak.platform.local' /etc/hosts || echo '127.0.0.1 keycloak.platform.local' >> /etc/hosts"
 ssh_droplet "cd /root/projectbooth && kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 443:443 >/tmp/kc-client-pf.log 2>&1 & PF_PID=\$!; sleep 3; bash bootstrap/keycloak-bootstrap-ui-shell-client.sh; STATUS=\$?; kill \$PF_PID 2>/dev/null || true; exit \$STATUS" || die \
   "Failed to provision ui-shell's Keycloak client — see output above; \
