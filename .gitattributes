@@ -1,0 +1,10 @@
+# 2026-09-16, hit live: a Windows checkout with core.autocrlf enabled (the Git-for-Windows
+# installer default) rewrites every text file to CRLF line endings on checkout/pull, including
+# shell scripts. That's silently fatal for the ones actually EXECUTED locally on that same
+# machine (infra/ephemeral-test/run.sh, destroy.sh) — a CRLF-terminated bash script can fail to
+# parse at all (a stray \r lands inside tokens like `{` or a quoted multi-line string that gets
+# passed to a remote shell verbatim), and the failure mode is a confusing syntax error nowhere
+# near where the file was actually edited, not an obvious "your line endings are wrong" message.
+# Forcing LF for shell scripts regardless of any individual contributor's local autocrlf setting
+# fixes this repo-wide, not just for the one file that happened to hit it first.
+*.sh text eol=lf
