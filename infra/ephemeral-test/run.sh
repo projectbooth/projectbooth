@@ -31,6 +31,13 @@ REVISION="${REVISION:-dev}"
 STATE_FILE="$SCRIPT_DIR/.ephemeral-state.json"
 ACCESS_KEY_FILE="$SCRIPT_DIR/.droplet-access-key"
 DEPLOY_KEY_FILE="$SCRIPT_DIR/.deploy-key"
+# 2026-09-16: a fresh realm import has groups/roles/clients but nobody who can actually log in —
+# see keycloak-bootstrap-first-user.sh's own header for the full story. SKIP_FIRST_USER, like every
+# other optional behavior in this script, is an env var rather than a flag (matches REVISION's own
+# convention above — this script has no getopts/flag-parsing loop at all, on purpose, so it doesn't
+# grow two different configuration mechanisms side by side).
+SKIP_FIRST_USER="${SKIP_FIRST_USER:-false}"
+FIRST_USER_USERNAME="${FIRST_USER_USERNAME:-admin}"
 
 require_cmd terraform
 require_cmd ssh
@@ -185,6 +192,39 @@ info "Running bootstrap/install.sh on the droplet — this takes several minutes
 # is reached via SSH (kubectl directly, or port-forward/tunnels for anything web-based) instead.
 ssh_droplet "cd /root/projectbooth && ./bootstrap/install.sh --repo-url '${REPO_URL}' --revision '${REVISION}' --repo-ssh-key /root/deploy_key --skip-metallb"
 
+# 2026-09-16, hit live during Trino verification: ingress-nginx's admission webhook
+# (ValidatingWebhookConfiguration ingress-nginx-admission) never got a caBundle patched into its
+# clientConfig — the upstream chart's admission-patch Job (a Helm post-install hook that injects the
+# CA cert admission-create generated into the webhook config) never ran under Argo CD, even though
+# admission-create itself (which just writes the cert into the ingress-nginx-admission Secret)
+# completed fine. Looks like an Argo CD / Helm-native-hook interaction, not anything specific to this
+# droplet. Left alone, EVERY Ingress apply (gateway's, ui-shell's, any future module's) fails
+# validation against that webhook with "x509: certificate signed by unknown authority" — Argo CD
+# reports it as a SyncError on the affected Application, but the only symptom visible from a browser
+# is a plain nginx default-backend 404, with nothing obviously pointing back at the real cause (lost
+# real time to this live before tracing it). Patching the CA in ourselves, from the Secret
+# admission-create already wrote, is the exact fix confirmed live 2026-09-16 — running it here, right
+# after install.sh returns and before anything below that needs an Ingress to exist, so nothing
+# downstream can hit this wall. Uses JSON Patch "add" rather than "replace": the field is often
+# missing outright rather than merely empty, and "replace" fails against a path that doesn't exist
+# yet; "add" against an already-populated field just overwrites it, so this is safe to run
+# unconditionally on every run, re-run or not.
+info "Ensuring ingress-nginx's admission webhook has a valid CA bundle (known Argo/Helm-hook gap — see comment)..."
+for _ in $(seq 1 30); do
+  ssh_droplet "kubectl -n ingress-nginx get secret ingress-nginx-admission" >/dev/null 2>&1 && break
+  sleep 5
+done
+ssh_droplet "kubectl -n ingress-nginx get secret ingress-nginx-admission" >/dev/null 2>&1 || die \
+  "ingress-nginx-admission Secret never appeared after 150s (written by the admission-create Job) — \
+ingress-nginx itself may not have synced yet. Check 'kubectl get applications -n argocd' on the \
+droplet and re-run this script once it's Synced."
+ssh_droplet '
+  CA_BUNDLE=$(kubectl -n ingress-nginx get secret ingress-nginx-admission -o jsonpath="{.data.ca}")
+  kubectl patch validatingwebhookconfigurations ingress-nginx-admission --type=json \
+    -p="[{\"op\": \"add\", \"path\": \"/webhooks/0/clientConfig/caBundle\", \"value\":\"${CA_BUNDLE}\"}]"
+' || die "Failed to patch ingress-nginx's admission webhook caBundle — see output above."
+success "ingress-nginx admission webhook's caBundle is set."
+
 # 2026-09-15, hit live: gateway.yaml carries two SealedSecrets (gateway-github-token,
 # gateway-module-proxy-secret) committed to git — but a SealedSecret is encrypted specifically for
 # the sealed-secrets controller's key on ONE cluster (see bootstrap/seal-gateway-*.sh's own headers).
@@ -261,13 +301,75 @@ ssh_droplet "
   command -v jq >/dev/null || { echo 'jq never became installable after 150s — the apt lock never cleared.' >&2; exit 1; }
 "
 ssh_droplet "grep -q 'keycloak.platform.local' /etc/hosts || echo '127.0.0.1 keycloak.platform.local' >> /etc/hosts"
-ssh_droplet "cd /root/projectbooth && kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 443:443 >/tmp/kc-client-pf.log 2>&1 & PF_PID=\$!; sleep 3; bash bootstrap/keycloak-bootstrap-ui-shell-client.sh; STATUS=\$?; kill \$PF_PID 2>/dev/null || true; exit \$STATUS" || die \
+# 2026-09-16, hit live: "bash: bootstrap/keycloak-bootstrap-ui-shell-client.sh: No such file or
+# directory" — the file is exactly where it looks (bootstrap/keycloak-bootstrap-ui-shell-client.sh,
+# relative to the repo root), so this wasn't a missing file, it was the WRONG cwd. The ORIGINAL shape
+# here was `cd /root/projectbooth && kubectl ... & PF_PID=$!; ...` — but `&` backgrounds the entire
+# preceding `&&`-list as one unit, not just the last command in it, so `cd /root/projectbooth &&
+# kubectl ...` as a whole ran in a backgrounded subshell. That subshell's `cd` only ever changed ITS
+# OWN directory; the foreground shell that went on to run `bash bootstrap/keycloak-bootstrap-ui-shell-
+# client.sh` right after was still sitting in /root (this ssh session's login directory), not
+# /root/projectbooth — a classic bash `cmd1 && cmd2 &` gotcha, not a real missing file. Fix: `cd` on
+# its own line first (so it affects the actual foreground shell everything else runs in), THEN
+# background only the port-forward by itself.
+ssh_droplet "
+  cd /root/projectbooth
+  kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 443:443 >/tmp/kc-client-pf.log 2>&1 &
+  PF_PID=\$!
+  sleep 3
+  bash bootstrap/keycloak-bootstrap-ui-shell-client.sh
+  STATUS=\$?
+  kill \$PF_PID 2>/dev/null || true
+  exit \$STATUS
+" || die \
   "Failed to provision ui-shell's Keycloak client — see output above; \
 bootstrap/keycloak-bootstrap-ui-shell-client.sh's own die() messages explain the likely cause \
 (common one: keycloak-realm/keycloak-instance not yet Synced/Healthy — check \
 'kubectl get applications -n argocd' on the droplet and re-run this script once they are; nothing \
 before this point re-runs destructively)."
 success "ui-shell's Keycloak client provisioned."
+
+FIRST_USER_CREATED=false
+if [[ "$SKIP_FIRST_USER" == true ]]; then
+  info "Skipping first-user creation (SKIP_FIRST_USER=true) — nobody can log in yet; run \
+bootstrap/keycloak-bootstrap-first-user.sh yourself when you're ready (see its own --help)."
+else
+  info "Creating a first login user ('${FIRST_USER_USERNAME}', realm 'platform', workspace 'personal', role 'owner')..."
+  # Read locally, on YOUR machine, and piped to the droplet over this SSH command's own stdin —
+  # never baked into the remote command string (which WOULD be visible via `ps` on the droplet for
+  # as long as the command runs, the exact thing keycloak-bootstrap-first-user.sh's own header warns
+  # about) and never touching this script's own argv or a log file. `ssh_droplet` doesn't pass `-n`,
+  # so it forwards stdin through to the remote command by default — that's what makes this work.
+  read -r -s -p "Password for the new '${FIRST_USER_USERNAME}' Keycloak user (this terminal only — never logged, never sent anywhere but this SSH session): " FIRST_USER_PASSWORD
+  echo
+  if [[ -z "$FIRST_USER_PASSWORD" ]]; then
+    warn "Empty password entered — skipping first-user creation. Re-run \
+bootstrap/keycloak-bootstrap-first-user.sh by hand (see its own --help) once you have one."
+  else
+    # </dev/null on the backgrounded port-forward: without it, it inherits this remote shell's own
+    # stdin (the piped password) and competes with the foreground script's `read` for those bytes —
+    # background jobs don't get their own stdin by default just because they're backgrounded.
+    if printf '%s\n' "$FIRST_USER_PASSWORD" | ssh_droplet "
+      grep -q 'keycloak.platform.local' /etc/hosts || echo '127.0.0.1 keycloak.platform.local' >> /etc/hosts
+      kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 443:443 </dev/null >/tmp/kc-user-pf.log 2>&1 &
+      PF_PID=\$!
+      sleep 3
+      bash /root/projectbooth/bootstrap/keycloak-bootstrap-first-user.sh --username '${FIRST_USER_USERNAME}' --role owner
+      STATUS=\$?
+      kill \$PF_PID 2>/dev/null || true
+      exit \$STATUS
+    "; then
+      success "First user '${FIRST_USER_USERNAME}' ready."
+      FIRST_USER_CREATED=true
+    else
+      warn "First-user creation failed — see output above. Nothing before this point re-runs \
+destructively; retry by hand with bootstrap/keycloak-bootstrap-first-user.sh once the cause is \
+fixed (common one: keycloak-instance not yet fully Healthy — check \
+'kubectl get applications -n argocd' on the droplet)."
+    fi
+  fi
+  unset FIRST_USER_PASSWORD
+fi
 
 cat <<EOF
 
@@ -278,6 +380,11 @@ ${_c_green}==> Ready.${_c_reset}
   Argo CD UI:     ssh -i ${ACCESS_KEY_FILE} -L 8080:localhost:443 root@${DROPLET_IP}
                   then: kubectl -n argocd port-forward svc/argocd-server 8080:443   (run ON the droplet, in that same session)
                   then browse https://localhost:8080 from YOUR machine
+  The app itself: ssh -i ${ACCESS_KEY_FILE} -L 443:localhost:8443 root@${DROPLET_IP}
+                  then: kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8443:443   (run ON the droplet, in that same session)
+                  then, with app.platform.local/gateway.platform.local/keycloak.platform.local
+                  pointed at 127.0.0.1 in your hosts file, browse https://app.platform.local
+$(if [[ "$FIRST_USER_CREATED" == true ]]; then echo "                  log in as '${FIRST_USER_USERNAME}' with the password you just entered"; else echo "                  no login user exists yet — see the first-user note above"; fi)
   Any other Service the same way: forward it on the droplet, tunnel that port over SSH from here.
 
   Before installing gateway/ui-shell/catalog-service modules: their GHCR packages need to be
