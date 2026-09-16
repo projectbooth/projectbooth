@@ -91,7 +91,7 @@ spec:
       # pods — exactly what `kubectl rollout restart` does by patching a similar annotation, just
       # automatic and with a value you can compare against a commit instead of a bare timestamp.
       annotations:
-        platform.io/git-sha: "822b328a483a66d987cf55e5db7676078c2b9906"
+        platform.io/git-sha: "ac640f6ae8c48b16b1dcbcc0714bcb8e2f4669ce"
     spec:
       serviceAccountName: gateway
       containers:
