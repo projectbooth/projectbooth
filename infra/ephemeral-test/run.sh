@@ -61,9 +61,22 @@ fi
 : "${TF_VAR_do_token:?Set TF_VAR_do_token to your DigitalOcean API token first (Account -> API -> Generate New Token). See README.md.}"
 
 info "Detecting your public IP for the SSH firewall rule..."
-MY_IP="$(curl -s https://ifconfig.me)"
-[[ "$MY_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Couldn't determine a plausible public IPv4 (got: '${MY_IP}'). Set TF_VAR_allowed_ssh_cidr yourself and re-run, or check your network."
-export TF_VAR_allowed_ssh_cidr="${MY_IP}/32"
+# 2026-09-16, hit live: a dual-stack machine (IPv6 available and preferred by its resolver — common
+# on home ISPs and increasingly the default) makes a bare `curl https://ifconfig.me` come back with
+# an IPv6 address, which the IPv4-CIDR regex below correctly rejects — but the die message's own
+# advice ("set TF_VAR_allowed_ssh_cidr yourself and re-run") used to be a dead end: this block ran
+# unconditionally and stomped any pre-set value with the freshly (re-)detected one, contradicting
+# variables.tf's own doc comment for allowed_ssh_cidr ("set it yourself if you're behind a
+# VPN/proxy..."). Fixed two ways: `-4` forces the detection itself onto IPv4 (fixes this exact case
+# with no manual step at all), and a pre-set TF_VAR_allowed_ssh_cidr is now honored and skips
+# detection entirely, so the escape hatch the variable's own docs already promised actually works.
+if [[ -n "${TF_VAR_allowed_ssh_cidr:-}" ]]; then
+  info "TF_VAR_allowed_ssh_cidr already set to ${TF_VAR_allowed_ssh_cidr} — using it as-is, skipping auto-detection."
+else
+  MY_IP="$(curl -4 -s https://ifconfig.me)"
+  [[ "$MY_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Couldn't determine a plausible public IPv4 (got: '${MY_IP}'). Set TF_VAR_allowed_ssh_cidr yourself (e.g. export TF_VAR_allowed_ssh_cidr=\"203.0.113.4/32\") and re-run, or check your network."
+  export TF_VAR_allowed_ssh_cidr="${MY_IP}/32"
+fi
 info "Allowing SSH from ${TF_VAR_allowed_ssh_cidr} only."
 
 info "terraform init..."
