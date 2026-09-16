@@ -150,3 +150,80 @@ def test_healthz_requires_no_auth_and_does_not_touch_catalog_service():
         response = client.get("/healthz")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+# 2026-09-16 (Trino live-verification): regression tests for _module_proxy_redirect_target, exercised
+# through the real route the same way every other proxy.py behavior in this file is — see that
+# function's own module-level comment in proxy.py for the full story (Trino's bundled Web UI calls
+# fetch("/ui/api/cluster") etc., which escapes module_proxy.py's own route entirely and lands here).
+
+
+@respx.mock
+def test_proxy_redirects_a_referer_scoped_unauthenticated_request_into_the_module_proxy_route(jwk_dict):
+    _mock_jwks(jwk_dict)  # registered but must never be called — no Authorization header on this request
+    with TestClient(app) as client:
+        response = client.get(
+            "/ui/api/cluster",
+            headers={"Referer": "https://gateway.platform.local/modules/trino/proxy/ui/"},
+            follow_redirects=False,
+        )
+    assert response.status_code == 307
+    assert response.headers["location"] == "/modules/trino/proxy/ui/api/cluster"
+
+
+@respx.mock
+def test_proxy_redirect_preserves_the_query_string(jwk_dict):
+    _mock_jwks(jwk_dict)
+    with TestClient(app) as client:
+        response = client.get(
+            "/ui/api/query?queryId=abc123",
+            headers={"Referer": "https://gateway.platform.local/modules/trino/proxy/ui/"},
+            follow_redirects=False,
+        )
+    assert response.status_code == 307
+    assert response.headers["location"] == "/modules/trino/proxy/ui/api/query?queryId=abc123"
+
+
+@respx.mock
+def test_proxy_does_not_redirect_when_authorization_header_is_present(jwk_dict, auth_header):
+    # A real, deliberate catalog-service call that just happens to carry a stale Referer from a
+    # previously-viewed module-proxy page must go through the normal path untouched, not get
+    # redirected into a module's own UI.
+    _mock_jwks(jwk_dict)
+    catalog_route = respx.get(f"{CATALOG_BASE}/ui/api/cluster").mock(
+        return_value=httpx.Response(200, json={"ok": True})
+    )
+    with TestClient(app) as client:
+        response = client.get(
+            "/ui/api/cluster",
+            headers={
+                **auth_header,
+                "X-Workspace": "personal",
+                "Referer": "https://gateway.platform.local/modules/trino/proxy/ui/",
+            },
+            follow_redirects=False,
+        )
+    assert response.status_code == 200
+    assert catalog_route.called
+
+
+@respx.mock
+def test_proxy_does_not_redirect_without_a_referer_header(jwk_dict):
+    # No Authorization AND no Referer at all — nothing here points at a module-proxy origin, so this
+    # must fall through to the ordinary "missing Authorization" 401, not a redirect to nowhere.
+    _mock_jwks(jwk_dict)
+    with TestClient(app) as client:
+        response = client.get("/ui/api/cluster", follow_redirects=False)
+    assert response.status_code == 401
+
+
+@respx.mock
+def test_proxy_does_not_redirect_for_a_referer_outside_any_module_proxy_path(jwk_dict):
+    _mock_jwks(jwk_dict)
+    with TestClient(app) as client:
+        response = client.get(
+            "/ui/api/cluster",
+            headers={"Referer": "https://gateway.platform.local/some/other/page"},
+            follow_redirects=False,
+        )
+    assert response.status_code == 401
