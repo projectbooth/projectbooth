@@ -491,6 +491,94 @@ def test_proxy_leaves_a_genuinely_external_redirect_untouched(sign_proxy_token, 
 
 
 @respx.mock
+def test_proxy_rewrites_an_explicit_cookie_path_back_under_the_proxy_path(sign_proxy_token, mounted_sa):
+    # 2026-09-15, live Trino verification, login-redirect-loop root cause #2 (found AFTER the
+    # cookie-forwarding fix above was confirmed deployed, yet the login still looped): Trino's login
+    # response sets `Trino-UI-Token=...;Version=1;Path=/ui;HttpOnly` (confirmed live via DevTools'
+    # Response Headers) — Trino's own idea of its root, exactly like the Location-header bug above but
+    # in Set-Cookie's Path= attribute instead. Per RFC 6265 §5.1.4 the browser matches Path literally
+    # against the request path with no proxy-awareness — a request to
+    # /modules/hello-module/proxy/ui/... does not start with /ui, so the browser would never reattach
+    # this cookie to any follow-up request, silently breaking the session with no error anywhere.
+    token = sign_proxy_token("hello-module")
+    _mock_k8s([_application("hello-module")])
+    respx.post(f"{MODULE_BASE}/ui/login").mock(
+        return_value=httpx.Response(
+            303,
+            headers={
+                "location": "/ui/",
+                "set-cookie": "Trino-UI-Token=abc123;Version=1;Path=/ui;HttpOnly",
+            },
+        )
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/modules/hello-module/proxy/ui/login?token={token}", follow_redirects=False
+        )
+
+    assert response.status_code == 303
+    set_cookie_values = response.headers.get_list("set-cookie")
+    trino_cookie = next(v for v in set_cookie_values if v.startswith("Trino-UI-Token="))
+    lowered = trino_cookie.lower()
+    assert "path=/modules/hello-module/proxy/ui" in lowered
+    assert not lowered.rstrip(";").endswith("path=/ui")
+
+
+@respx.mock
+def test_proxy_leaves_a_cookie_with_no_explicit_path_untouched(sign_proxy_token, mounted_sa):
+    # No Path= attribute at all means the browser computes its own default-path from the ACTUAL
+    # request URL it used (the proxy's own /modules/hello-module/proxy/... path) — already correctly
+    # scoped with zero rewriting needed. Rewriting here anyway would narrow a scope the module never
+    # asked for.
+    token = sign_proxy_token("hello-module")
+    _mock_k8s([_application("hello-module")])
+    respx.get(f"{MODULE_BASE}/").mock(
+        return_value=httpx.Response(200, text="ok", headers={"set-cookie": "session=xyz;HttpOnly"})
+    )
+
+    with TestClient(app) as client:
+        response = client.get(f"/modules/hello-module/proxy?token={token}")
+
+    assert response.status_code == 200
+    set_cookie_values = response.headers.get_list("set-cookie")
+    session_cookie = next(v for v in set_cookie_values if v.startswith("session="))
+    assert session_cookie == "session=xyz;HttpOnly"
+
+
+@respx.mock
+def test_proxy_forwards_multiple_set_cookie_headers_from_one_response(sign_proxy_token, mounted_sa):
+    # Building response_headers as a plain {key: value} dict from upstream_response.headers.items()
+    # would silently keep only the LAST Set-Cookie when a module's response sets more than one in the
+    # same response (a real, RFC 6265 §3-legal shape — a session cookie and a CSRF cookie together,
+    # say) — no error anywhere, the earlier one(s) would just never reach the browser. Regression test
+    # for handling set-cookie via multi_items()/response.headers.append() instead of a dict merge.
+    token = sign_proxy_token("hello-module")
+    _mock_k8s([_application("hello-module")])
+    respx.get(f"{MODULE_BASE}/").mock(
+        return_value=httpx.Response(
+            200,
+            text="ok",
+            headers=[
+                ("set-cookie", "first=1;Path=/ui"),
+                ("set-cookie", "second=2;HttpOnly"),
+            ],
+        )
+    )
+
+    with TestClient(app) as client:
+        response = client.get(f"/modules/hello-module/proxy?token={token}")
+
+    assert response.status_code == 200
+    set_cookie_values = response.headers.get_list("set-cookie")
+    assert any(v.startswith("first=1") for v in set_cookie_values)
+    assert any(v.startswith("second=2") for v in set_cookie_values)
+    # Own module-proxy cookie (_set_proxy_cookie) must still be set too — three total.
+    assert any(v.startswith("mp_token_hello-module=") for v in set_cookie_values)
+    assert len(set_cookie_values) == 3
+
+
+@respx.mock
 def test_proxy_streams_a_post_body_through(sign_proxy_token, mounted_sa):
     token = sign_proxy_token("hello-module")
     _mock_k8s([_application("hello-module")])

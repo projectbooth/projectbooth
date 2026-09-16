@@ -59,6 +59,7 @@ multi-file frontend or its own backend calls is the real test this hasn't had ye
 """
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import AsyncIterator
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -226,6 +227,43 @@ def _rewrite_redirect_location(location: str, module_id: str, target: str, reque
     return urlunsplit(
         ("", "", f"/modules/{module_id}/proxy{resolved_parts.path or '/'}", resolved_parts.query, "")
     )
+
+
+_COOKIE_PATH_ATTR_RE = re.compile(r"(?i)(;\s*Path\s*=\s*)([^;]*)")
+
+
+def _rewrite_cookie_path(set_cookie_value: str, module_id: str) -> str:
+    """2026-09-15 (Trino live-verification, login-redirect-loop root cause #2 — found AFTER the
+    cookie-forwarding fix above shipped and was confirmed deployed, yet the login still looped):
+    Trino's login response sets its own session/CSRF cookie as
+    `Trino-UI-Token=...;Version=1;Path=/ui;HttpOnly` (confirmed live via DevTools' Response Headers,
+    not guessed) — an explicit `Path=/ui`, built from Trino's own idea of its root, exactly the same
+    "backend doesn't know it's behind a reverse proxy" class of bug `_rewrite_redirect_location` above
+    already fixed for `Location`. Per RFC 6265 §5.1.4, a cookie's `Path` attribute is matched against
+    the literal request path with no rewriting or awareness of any proxy in front — a request to
+    `/modules/{module_id}/proxy/ui/...` does NOT start with `/ui`, so the browser silently never
+    attaches this cookie to any follow-up request. No error surfaces anywhere (not in the network tab,
+    not in either server's logs) — it just looks exactly like Trino forgot the session, which is what
+    sent the first round of this investigation down the wrong path (gateway's own cookie-forwarding
+    logic) before the actual `Set-Cookie` header was captured live and this became visible.
+
+    Fix: same shape as the Location fix — re-root whatever explicit `Path=` the module set underneath
+    this route's own `/modules/{module_id}/proxy` prefix, so a request under the module's own idea of
+    its path also stays under the proxy path where the browser will actually reattach the cookie. A
+    `Set-Cookie` with NO explicit `Path` attribute is left untouched on purpose: per RFC 6265 §5.1.4,
+    when `Path` is omitted the browser computes a "default-path" from the ACTUAL request path it used
+    — here, the proxy's own `/modules/{module_id}/proxy/...` URL — which is already correctly scoped
+    with no rewriting needed; adding one where the module didn't ask for one would only narrow its
+    intended scope for no reason.
+    """
+    match = _COOKIE_PATH_ATTR_RE.search(set_cookie_value)
+    if match is None:
+        return set_cookie_value
+    original_path = match.group(2).strip()
+    if not original_path.startswith("/"):
+        original_path = f"/{original_path}"
+    new_path = f"/modules/{module_id}/proxy{original_path}"
+    return f"{set_cookie_value[: match.start(2)]}{new_path}{set_cookie_value[match.end(2) :]}"
 
 
 def _sanitize_frame_headers(headers: dict[str, str]) -> dict[str, str]:
@@ -426,13 +464,26 @@ async def _proxy_module_request(module_id: str, path: str, request: Request):
         await client.aclose()
         return JSONResponse(status_code=502, content={"detail": f"{module_id!r}'s own UI is unreachable."})
 
+    # set-cookie is pulled out of this dict and handled separately below, via multi_items() +
+    # response.headers.append() rather than as a plain dict entry: a module's response can carry MORE
+    # THAN ONE Set-Cookie header (a real HTTP mechanism, RFC 6265 §3 — nothing rules out a login
+    # response setting a session cookie and a CSRF cookie in the same response), but
+    # upstream_response.headers is httpx's own multi-value Headers object, and building a plain
+    # `{key: value}` dict from `.items()` silently keeps only the LAST one when a key repeats — every
+    # earlier Set-Cookie would be dropped with no error anywhere, the same "no visible failure" shape
+    # as every other bug this live-verification pass has found. Only actually observed with one
+    # Set-Cookie from Trino so far, but this is the correct general handling regardless, not a
+    # Trino-specific workaround.
     response_headers = _sanitize_frame_headers(
         {
             key: value
             for key, value in upstream_response.headers.items()
-            if key.lower() not in _HOP_BY_HOP_HEADERS
+            if key.lower() not in _HOP_BY_HOP_HEADERS and key.lower() != "set-cookie"
         }
     )
+    set_cookie_values = [
+        value for key, value in upstream_response.headers.multi_items() if key.lower() == "set-cookie"
+    ]
 
     if 300 <= upstream_response.status_code < 400:
         for key in list(response_headers):
@@ -455,6 +506,10 @@ async def _proxy_module_request(module_id: str, path: str, request: Request):
         headers=response_headers,
         media_type=upstream_response.headers.get("content-type"),
     )
+    # .append(), not a dict merge — see the multi_items() comment above for why: this is what actually
+    # lets more than one Set-Cookie header survive onto the outbound response.
+    for set_cookie_value in set_cookie_values:
+        response.headers.append("set-cookie", _rewrite_cookie_path(set_cookie_value, module_id))
     _set_proxy_cookie(response, module_id, token, exp)
     return response
 
