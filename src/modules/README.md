@@ -18,34 +18,15 @@ Schema/validation: `../platform-cli/platform_cli/manifest.py`'s `ModuleManifest`
 in a `module.yaml` here fails `platform module install`/`scaffold` with a specific message, not
 silently.
 
-## Wrapping a third-party Helm chart (`externalChart`)
-
-Added feature/module-external-chart, 2026-09-14 (Phase 3 kickoff — `trino/module.yaml` is the
-first real example). Some modules wrap a chart maintained upstream (Trino, and later Spark/Dask/
-Superset/MLflow) rather than one hand-authored in `../charts/`. For those, skip `../charts/<id>/`
-entirely and add an `externalChart:` block instead:
-
-```yaml
-externalChart:
-  repoURL: https://example.invalid/charts   # the chart's own Helm repo, not this repo
-  chart: some-chart
-  version: "1.2.3"                          # pin a real version; check for newer before installing
-values:
-  # Free-form Helm values for that chart — an external-chart module has no values.yaml of its own,
-  # so whatever the chart needs (beyond `platform module install`'s own `placement:` block, which
-  # is merged in automatically) goes here.
-  someKey: someValue
-```
-
-`scaffold` does NOT generate this shape — it's still local-chart-only by design (its whole framing
-is "here's a skeleton, go write the service"; wrapping someone else's chart is a different task).
-Hand-write `module.yaml` the way `trino/module.yaml` does, using it as a second worked example
-alongside `_template/module.yaml`.
-
-A module can't set `externalChart` AND have a `../charts/<id>/` directory — `platform module
-install` refuses that combination outright (ambiguous which chart Argo CD would actually use).
-
-`platform module install` still runs a `helm template` safety check before writing the Application
-manifest either way — for an `externalChart` module this pulls straight from `externalChart.repoURL`
-(no local chart directory involved), so `helm` still needs to be on `PATH` for the check to run (it
-warns and skips, rather than blocking, when it isn't).
+A module can also ship a one-time, idempotent setup step that needs to run INSIDE the cluster once
+it's installed — something `platform module install` itself can't do, since platform-cli never talks
+to the live cluster directly (no network path from wherever it's invoked, and no cluster
+credentials; see `module.py`'s own `_print_purge_command` for that same boundary). `<id>/setup/`, if
+it exists, is picked up by convention (no `module.yaml` field, same existence-check `../charts/<id>/`
+itself already gets) and wired into the generated Application as a SECOND Argo CD source
+(`spec.sources:`, multi-source Applications) alongside the chart — a plain directory of raw
+manifests, not another chart, expected to contain one Job annotated as an Argo `PostSync` hook.
+`trino/setup/job.yaml` is the first real one: it creates Iceberg's own JDBC-catalog bookkeeping
+tables in Postgres before Trino ever tries to use them, since Trino deliberately never creates them
+itself (trinodb/trino#20419). See that file's own header comment, and
+`../platform-cli/platform_cli/manifest.py`'s module docstring (2026-09-16 entry) for the full design.
