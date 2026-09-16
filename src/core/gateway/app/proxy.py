@@ -10,16 +10,65 @@ the include_router() call for this same point made where it matters.
 """
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 
 import httpx
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 
 from app.auth import AuthError, derive_headers, verify_token
 from app.jwks import JWKSCache
+from app.modules import _MODULE_ID_PATTERN
 
 router = APIRouter()
+
+# 2026-09-16 (Trino live-verification): a module's own frontend can issue follow-up XHR/fetch calls
+# to hardcoded ABSOLUTE paths instead of something relative to wherever it's actually mounted — Trino's
+# bundled Web UI does exactly this, calling `fetch("/ui/api/cluster")` rather than
+# `fetch("ui/api/cluster")` or anything derived from its own current location. That request never
+# reaches module_proxy.py's `/modules/{module_id}/proxy/...` route at all; it lands HERE, in this
+# catch-all, indistinguishable at a glance from a genuine catalog-service API call. verify_token()
+# below then rejects it (no Authorization header — a browser has no reason to attach a Keycloak
+# bearer token to a same-origin fetch() the module's own bundle issued), which looks like an auth
+# failure but has nothing to do with auth: the module's UI never even reached its own backend.
+# Confirmed live 2026-09-16: Trino's dashboard "flickered" forever, polling
+# `/ui/api/cluster`/`stats`/`query` every few seconds, each one landing here and 401ing, while the
+# correctly-proxied `/modules/trino/proxy/ui/...` requests (the page itself, its JS/CSS bundles) all
+# succeeded — see docs/known-issues.md for the full write-up.
+#
+# Fixed generically, not Trino-specifically — ARCHITECTURE.md's Phase 5/6 modules (Spark, Dask,
+# Superset, MLflow) will hit this same class of bug on whatever chart they ship. A stray request like
+# this still carries a Referer naming the page it actually came from —
+# `https://gateway.platform.local/modules/{module_id}/proxy/ui/` — so a request with NO Authorization
+# header and a Referer pointing under some module's proxy path is far more likely to be exactly this
+# case than a genuine unauthenticated catalog-service call. Redirecting it (307, so the original
+# method and body survive the round trip) back into module_proxy.py's own route lets that route's
+# existing cookie-based auth handle it correctly, no change needed in any module's own code. A caller
+# that DID send an Authorization header is making a real, deliberate catalog-service call and always
+# goes through the normal path below untouched, even with a stale Referer left over from a previous
+# module-proxy page.
+_MODULE_ID_CHARS = _MODULE_ID_PATTERN.strip("^$")
+_REFERER_MODULE_PROXY_RE = re.compile(rf"^https?://[^/]+/modules/(?P<module_id>{_MODULE_ID_CHARS})/proxy/")
+
+
+def _module_proxy_redirect_target(
+    path: str, authorization: str | None, referer: str | None, query_string: str
+) -> str | None:
+    """Pure function — see the module-level comment above for the full reasoning. Returns the
+    path-absolute redirect target (resolved against gateway's own origin, no scheme/host needed) or
+    None when this request should be handled normally by `proxy()` below."""
+    if authorization:
+        return None
+    if not referer:
+        return None
+    match = _REFERER_MODULE_PROXY_RE.match(referer)
+    if not match:
+        return None
+    module_id = match.group("module_id")
+    query = f"?{query_string}" if query_string else ""
+    return f"/modules/{module_id}/proxy/{path}{query}"
+
 
 # Hop-by-hop headers per RFC 7230 §6.1 — meaningful only for the single
 # connection they were sent on, never something to blindly copy from an
@@ -45,6 +94,12 @@ _CLIENT_AUTH_HEADERS = {"authorization", "x-workspace", "x-user", "x-role"}
 
 @router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def proxy(path: str, request: Request):
+    redirect_target = _module_proxy_redirect_target(
+        path, request.headers.get("authorization"), request.headers.get("referer"), request.url.query
+    )
+    if redirect_target is not None:
+        return RedirectResponse(url=redirect_target, status_code=307)
+
     catalog_client: httpx.AsyncClient = request.app.state.catalog_client
     jwks: JWKSCache = request.app.state.jwks
 
