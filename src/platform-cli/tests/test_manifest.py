@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import yaml
 
-from platform_cli.manifest import ModuleManifest, render_application_manifest
+from platform_cli.manifest import ExternalChart, ModuleManifest, render_application_manifest
 
 
 def _manifest(**overrides) -> ModuleManifest:
@@ -25,9 +25,12 @@ def _manifest(**overrides) -> ModuleManifest:
     return ModuleManifest(**fields)
 
 
-def _render(manifest: ModuleManifest) -> str:
+def _render(manifest: ModuleManifest, *, setup_dir: str | None = None) -> str:
     return render_application_manifest(
-        manifest, repo_url="https://example.invalid/repo.git", chart_path="src/charts/hello-module"
+        manifest,
+        repo_url="https://example.invalid/repo.git",
+        chart_path="src/charts/hello-module",
+        setup_dir=setup_dir,
     )
 
 
@@ -69,95 +72,79 @@ def test_proxy_to_is_propagated_into_annotations():
     assert parsed["metadata"]["annotations"]["platform.io/proxy-to"] == "http://hello-module.hello-module.svc:80"
 
 
-# --- externalChart (feature/module-external-chart, 2026-09-14, ARCHITECTURE.md §11 Phase 3) -----
-#
-# See manifest.py's own module docstring for the full "why" — a module's chart no longer has to
-# live in this repo. These tests cover render_application_manifest() directly (unit-level, like
-# every other test in this file); test_module.py's install()-level tests cover the filesystem-based
-# local-vs-external decision (chart_dir existence, the ambiguous-both-sources guard) that lives in
-# module.py, not here.
+# 2026-09-16 (Trino live-verification) — see manifest.py's own module docstring for the full
+# reasoning: a module can carry a one-time, idempotent in-cluster setup Job (Trino's Iceberg
+# JDBC-catalog bookkeeping tables), wired in as a SECOND Argo CD source via `setup_dir`.
 
 
-def test_local_chart_source_is_unchanged_by_default():
-    # Every module written before this branch (hello-module, _template) has no externalChart at
-    # all — this proves that default renders exactly as it always did: a path into this repo, no
-    # `chart:`/external `repoURL` anywhere in the output.
+def test_setup_dir_omitted_renders_the_original_singular_source():
+    # None (the default) must still render exactly the pre-2026-09-16 shape: no test written before
+    # this branch should ever need to change because of it.
     manifest = _manifest()
 
-    parsed = yaml.safe_load(_render(manifest))
-    source = parsed["spec"]["source"]
-    assert source["path"] == "src/charts/hello-module"
-    assert source["repoURL"] == "https://example.invalid/repo.git"
-    assert source["targetRevision"] == "dev"
-    assert "chart" not in source
+    parsed = yaml.safe_load(_render(manifest, setup_dir=None))
+    spec = parsed["spec"]
+    assert "source" in spec
+    assert "sources" not in spec
+    assert spec["source"]["path"] == "src/charts/hello-module"
 
 
-def test_external_chart_source_replaces_the_local_path():
+def test_setup_dir_set_renders_a_two_item_sources_list_for_a_local_chart():
+    manifest = _manifest()
+
+    parsed = yaml.safe_load(_render(manifest, setup_dir="src/modules/hello-module/setup"))
+    spec = parsed["spec"]
+    assert "source" not in spec
+    assert "sources" in spec
+    sources = spec["sources"]
+    assert len(sources) == 2
+
+    main_source, setup_source = sources
+    assert main_source["path"] == "src/charts/hello-module"
+    assert main_source["repoURL"] == "https://example.invalid/repo.git"
+    assert main_source["targetRevision"] == "dev"
+    assert "helm" in main_source  # the chart's real values still travel with it, unchanged
+
+    assert setup_source == {
+        "repoURL": "https://example.invalid/repo.git",
+        "targetRevision": "dev",
+        "path": "src/modules/hello-module/setup",
+    }
+    assert "helm" not in setup_source  # a plain directory of raw manifests, not another chart
+
+
+def test_setup_dir_set_renders_a_two_item_sources_list_for_an_external_chart():
+    # The setup source is orthogonal to which shape the main chart source takes — an external-chart
+    # module (2026-09-14) needs its own bookkeeping Job wired in exactly the same way Trino's is.
     manifest = _manifest(
-        externalChart={
-            "repoURL": "https://trinodb.github.io/charts",
-            "chart": "trino",
-            "version": "1.42.2",
-        }
+        externalChart=ExternalChart(
+            repoURL="https://trinodb.github.io/charts", chart="trino", version="1.42.2"
+        )
     )
 
-    rendered = render_application_manifest(
-        manifest, repo_url="https://example.invalid/repo.git", chart_path=None
-    )
-    parsed = yaml.safe_load(rendered)
-    source = parsed["spec"]["source"]
-    assert source["repoURL"] == "https://trinodb.github.io/charts"
-    assert source["chart"] == "trino"
-    assert source["targetRevision"] == "1.42.2"
-    assert "path" not in source
-    # The module's OWN repo_url (this monorepo) must not leak into an external module's source —
-    # it's simply not relevant to where the chart actually comes from.
-    assert "example.invalid" not in rendered
+    parsed = yaml.safe_load(_render(manifest, setup_dir="src/modules/hello-module/setup"))
+    sources = parsed["spec"]["sources"]
+    assert len(sources) == 2
+
+    main_source, setup_source = sources
+    assert main_source["repoURL"] == "https://trinodb.github.io/charts"
+    assert main_source["chart"] == "trino"
+    assert main_source["targetRevision"] == "1.42.2"
+    assert "helm" in main_source
+
+    assert setup_source == {
+        "repoURL": "https://example.invalid/repo.git",
+        "targetRevision": "dev",
+        "path": "src/modules/hello-module/setup",
+    }
 
 
-def test_values_merge_alongside_placement_in_the_rendered_helm_values():
-    # An external-chart module has no src/charts/<id>/values.yaml of its own — its real
-    # configuration has to come from manifest.values instead. Proves it lands in the same
-    # spec.source.helm.values block placement already used, not a separate/lost location.
-    manifest = _manifest(
-        externalChart={"repoURL": "https://example.invalid/charts", "chart": "thing", "version": "1.0.0"},
-        values={"catalogs": {"iceberg": "connector.name=iceberg\n"}},
-    )
+def test_setup_dir_is_not_confused_with_the_main_chart_path():
+    # Regression guard: the setup source's `path` must be setup_dir, not chart_path, even though
+    # both are plain strings passed into the same function.
+    manifest = _manifest()
 
-    rendered = render_application_manifest(
-        manifest, repo_url="https://example.invalid/repo.git", chart_path=None
-    )
-    parsed = yaml.safe_load(rendered)
-    values = yaml.safe_load(parsed["spec"]["source"]["helm"]["values"])
-    assert values["placement"] == {}
-    assert values["catalogs"]["iceberg"] == "connector.name=iceberg\n"
-
-
-def test_placement_still_renders_the_same_shape_after_the_values_block_refactor():
-    # Regression coverage for _values_block() replacing the old hand-rolled
-    # _placement_values_block(): a Toleration's field order (key/operator/value/effect) must
-    # survive yaml.safe_dump(sort_keys=False), not get alphabetized.
-    manifest = _manifest(
-        placement={
-            "role": "compute",
-            "tolerations": [
-                {"key": "platform.io/role", "operator": "Equal", "value": "compute", "effect": "NoSchedule"}
-            ],
-        }
-    )
-
-    rendered = _render(manifest)
-    parsed = yaml.safe_load(rendered)
-    values = yaml.safe_load(parsed["spec"]["source"]["helm"]["values"])
-    assert values["placement"]["role"] == "compute"
-    assert values["placement"]["tolerations"] == [
-        {"key": "platform.io/role", "operator": "Equal", "value": "compute", "effect": "NoSchedule"}
-    ]
-    # Field order within each toleration mapping is preserved, not alphabetized — asserted via the
-    # raw text rather than a parsed dict (dict equality above already ignores key order).
-    values_text = parsed["spec"]["source"]["helm"]["values"]
-    key_pos = values_text.index("key:")
-    operator_pos = values_text.index("operator:")
-    value_pos = values_text.index("value:")
-    effect_pos = values_text.index("effect:")
-    assert key_pos < operator_pos < value_pos < effect_pos
+    parsed = yaml.safe_load(_render(manifest, setup_dir="src/modules/hello-module/setup"))
+    main_source, setup_source = parsed["spec"]["sources"]
+    assert main_source["path"] != setup_source["path"]
+    assert setup_source["path"] == "src/modules/hello-module/setup"

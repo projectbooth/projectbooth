@@ -13,6 +13,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 from platform_sdk import ModuleRequirementStatus
 from typer.testing import CliRunner
 
@@ -618,3 +619,101 @@ def test_install_external_chart_aborts_on_helm_template_failure(git_repo, monkey
     assert "helm template" in result.output
     assert "boom: no such chart" in result.output
     assert not (repo_root / "src/modules-enabled/trino.yaml").exists()
+
+
+# --- install: setup/ convention (Trino live-verification, 2026-09-16) -----------------------
+# A module can ship a one-time, idempotent in-cluster setup Job (Trino's Iceberg JDBC-catalog
+# bookkeeping tables) by putting it in src/modules/<id>/setup/ — no new module.yaml field,
+# existence-based, same convention chart_path itself already uses. See manifest.py's own module
+# docstring (2026-09-16 entry) for the full design.
+
+
+def _add_setup_dir(repo_root: Path, name: str) -> None:
+    setup_dir = repo_root / "src/modules" / name / "setup"
+    setup_dir.mkdir(parents=True)
+    # Content doesn't matter to install() itself — it only checks the directory exists and wires
+    # it in as a second Argo source. A single placeholder manifest is enough to prove that.
+    (setup_dir / "job.yaml").write_text("apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: placeholder\n")
+
+
+def test_install_renders_singular_source_when_no_setup_directory(git_repo, monkeypatch):
+    # The overwhelmingly common case (every module before Trino, and most after it) — no
+    # src/modules/<id>/setup/ at all — must still render the exact same `source:` (singular) shape
+    # install() always has, not `sources:`.
+    repo_root, _ = git_repo
+    _scaffold_and_commit(repo_root, "hello")
+    monkeypatch.setattr("platform_cli.module.shutil.which", lambda _: None)
+
+    result = runner.invoke(app, ["install", "hello", "--skip-requires-check"])
+    assert result.exit_code == 0, result.output
+    content = (repo_root / "src/modules-enabled/hello.yaml").read_text()
+    assert "\n  source:\n" in content
+    assert "\n  sources:\n" not in content
+
+
+def test_install_wires_setup_dir_as_second_source_when_setup_directory_exists(git_repo, monkeypatch):
+    repo_root, _ = git_repo
+    _scaffold_and_commit(repo_root, "hello")
+    _add_setup_dir(repo_root, "hello")
+    _commit_all(repo_root, "add hello setup job")
+    monkeypatch.setattr("platform_cli.module.shutil.which", lambda _: None)
+
+    result = runner.invoke(app, ["install", "hello", "--skip-requires-check"])
+    assert result.exit_code == 0, result.output
+    content = (repo_root / "src/modules-enabled/hello.yaml").read_text()
+    parsed = yaml.safe_load(content)
+    sources = parsed["spec"]["sources"]
+    assert "source" not in parsed["spec"]
+    assert len(sources) == 2
+    assert sources[0]["path"] == "src/charts/hello"  # the chart itself, unchanged
+    assert sources[1] == {
+        "repoURL": sources[0]["repoURL"],
+        "targetRevision": "dev",
+        "path": "src/modules/hello/setup",
+    }
+
+
+def test_install_setup_dir_works_alongside_an_external_chart(git_repo, monkeypatch):
+    # The setup Job convention is orthogonal to which shape the main chart source takes — Trino
+    # itself is exactly this combination (externalChart + setup/).
+    repo_root, _ = git_repo
+    _write_external_module_yaml(repo_root, "trino")
+    _add_setup_dir(repo_root, "trino")
+    _commit_all(repo_root, "add trino module descriptor and setup job")
+    monkeypatch.setattr("platform_cli.module.shutil.which", lambda _: None)
+
+    result = runner.invoke(app, ["install", "trino", "--skip-requires-check"])
+    assert result.exit_code == 0, result.output
+    content = (repo_root / "src/modules-enabled/trino.yaml").read_text()
+    parsed = yaml.safe_load(content)
+    sources = parsed["spec"]["sources"]
+    assert len(sources) == 2
+    assert sources[0]["chart"] == "thing"  # the external chart, unchanged
+    assert sources[1]["path"] == "src/modules/trino/setup"
+
+
+def test_install_setup_dir_helm_check_still_reads_the_main_source_values(git_repo, monkeypatch):
+    # Regression guard for module.py's own values_yaml re-derivation: with setup_dir set, the
+    # helm-template safety check must still read spec.sources[0]'s helm values, not choke trying to
+    # find a (nonexistent) helm: block on the plain setup/ directory source.
+    repo_root, _ = git_repo
+    _scaffold_and_commit(repo_root, "hello")
+    _add_setup_dir(repo_root, "hello")
+    _commit_all(repo_root, "add hello setup job")
+    monkeypatch.setattr("platform_cli.module.shutil.which", lambda _: "/usr/bin/helm")
+
+    real_run = subprocess.run
+    calls = []
+
+    def fake_run(args, **kwargs):
+        if args[0] != "/usr/bin/helm":
+            return real_run(args, **kwargs)
+        calls.append(args)
+        return subprocess.CompletedProcess(args, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("platform_cli.module.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["install", "hello", "--skip-requires-check"])
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    assert (repo_root / "src/modules-enabled/hello.yaml").is_file()
