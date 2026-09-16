@@ -60,6 +60,23 @@ same "turn a module.yaml into a running module" conversion `platform module inst
    Defaults to `{}` for every existing module, so nothing already written changes shape. See
    `src/modules/trino/module.yaml` for the first real module built this way, and
    `docs/architecture/module-lifecycle-plan.md`'s matching entry for the full design writeup.
+
+   2026-09-16 (Trino live-verification): a module can now also carry a one-time, idempotent setup
+   step that needs to run INSIDE the cluster once it's installed — Trino's Iceberg JDBC catalog
+   needs its own bookkeeping tables (`iceberg_tables`/`iceberg_namespace_properties`) created in
+   Postgres before it can be queried, and Trino itself deliberately never auto-creates them (a
+   documented, intentional upstream choice — see trinodb/trino#20419). `platform-cli` has neither
+   cluster network access nor credentials (see `module.py`'s own `_print_purge_command` for that
+   same, already-established boundary), so this can't run from the CLI process — it has to be a
+   Kubernetes Job that Argo CD runs as part of installing the module. Convention over new schema,
+   matching `chart_path`'s own existence-based gating: a `src/modules/<id>/setup/` directory, if it
+   exists, becomes a SECOND `source` on the generated Application (Argo CD's multi-source
+   Applications, `spec.sources:` — supported since Argo CD 2.6, this platform runs 3.5.3) — not
+   another chart, just a plain directory of raw manifests, expected to contain one Job annotated as
+   an Argo `PostSync` hook. No new ModuleManifest field: `render_application_manifest()`'s new
+   `setup_dir` parameter is computed by `module.py`'s `install()` the same way `chart_path` already
+   is, by checking whether the directory exists. See `src/modules/trino/setup/job.yaml` for the
+   first real use of this.
 """
 from __future__ import annotations
 
@@ -207,7 +224,7 @@ def _values_block(manifest: ModuleManifest) -> str:
 
 
 def render_application_manifest(
-    manifest: ModuleManifest, *, repo_url: str, chart_path: str | None
+    manifest: ModuleManifest, *, repo_url: str, chart_path: str | None, setup_dir: str | None = None
 ) -> str:
     """Renders the complete Argo CD `Application` YAML `platform module install` writes to
     `src/modules-enabled/<id>.yaml`. `repo_url` comes from `repo.discover_repo_url()` (git remote
@@ -223,33 +240,78 @@ def render_application_manifest(
     `apps/optional/storage-seaweedfs/seaweedfs.yaml` already writes by hand. Whether `chart_path` is
     `None` is entirely the caller's call — install()'s own local-chart-directory check (module.py)
     decides which shape a given module actually gets; this function just renders whichever one it's
-    told."""
+    told.
+
+    2026-09-16 (Trino live-verification): `setup_dir`, when set (a repo-relative path, e.g.
+    `src/modules/trino/setup`), adds that directory as a SECOND Argo CD source alongside the main
+    chart — `spec.sources:` (plural) instead of `spec.source:` — see this module's own docstring for
+    why (a one-time in-cluster setup Job, not another chart). `None` (the default) renders the exact
+    same single-`source:` shape every module had before this existed. Like `chart_path`, whether
+    it's `None` is the caller's call (module.py's install() checks whether the directory exists);
+    this function just renders whichever shape it's told.
+    """
     generated_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     values_block = _values_block(manifest)
-    indented_values = "\n".join(
+    # Indent depends on whether this ends up nested under `source:` (a mapping) or as the first
+    # item of `sources:` (a list) — two spaces deeper in the list case, to line up under the "- "
+    # marker's own first field. See the two branches below.
+    indented_values_single = "\n".join(
         f"        {line}" if line else "" for line in values_block.splitlines()
     )
+    indented_values_list = "\n".join(
+        f"          {line}" if line else "" for line in values_block.splitlines()
+    )
+
     if manifest.externalChart is not None:
-        source_block = f"""    repoURL: {manifest.externalChart.repoURL}
+        main_source_single = f"""    repoURL: {manifest.externalChart.repoURL}
     chart: {manifest.externalChart.chart}
     targetRevision: {manifest.externalChart.version}
     helm:
       values: |
-{indented_values}"""
+{indented_values_single}"""
+        main_source_list_item = f"""    - repoURL: {manifest.externalChart.repoURL}
+      chart: {manifest.externalChart.chart}
+      targetRevision: {manifest.externalChart.version}
+      helm:
+        values: |
+{indented_values_list}"""
         chart_comment = (
             f"# Chart: {manifest.externalChart.chart} {manifest.externalChart.version} from "
             f"{manifest.externalChart.repoURL} (not this repo — see module.yaml's own externalChart)."
         )
     else:
-        source_block = f"""    repoURL: {repo_url}
+        main_source_single = f"""    repoURL: {repo_url}
     targetRevision: dev
     path: {chart_path}
     helm:
       values: |
-{indented_values}"""
+{indented_values_single}"""
+        main_source_list_item = f"""    - repoURL: {repo_url}
+      targetRevision: dev
+      path: {chart_path}
+      helm:
+        values: |
+{indented_values_list}"""
         chart_comment = (
             f"# see src/charts/{manifest.id}/templates/*.yaml for this module's own PVCs, if it has any."
         )
+
+    if setup_dir is not None:
+        source_key_block = f"""  sources:
+{main_source_list_item}
+    - repoURL: {repo_url}
+      targetRevision: dev
+      path: {setup_dir}"""
+        setup_comment = (
+            f"# Also applies {setup_dir}/ as a second source — a one-time, idempotent in-cluster\n"
+            f"# setup step (an Argo PostSync-hook Job), not a chart. See that directory and\n"
+            "# manifest.py's own module docstring (2026-09-16) for the full reasoning.\n"
+        )
+    else:
+        source_key_block = f"""  source:
+{main_source_single}"""
+        setup_comment = ""
+
     return f"""\
 # GENERATED by `platform module install {manifest.id}` at {generated_at} — do not hand-edit.
 # Source descriptor: src/modules/{manifest.id}/module.yaml. To change this module's placement,
@@ -263,7 +325,7 @@ def render_application_manifest(
 # is enough to tear the whole module back down — except any PersistentVolumeClaim the chart marks
 # `argocd.argoproj.io/sync-options: Delete=false`, which survives on purpose (ARCHITECTURE.md §3;
 {chart_comment}
-apiVersion: argoproj.io/v1alpha1
+{setup_comment}apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: {manifest.id}
@@ -279,8 +341,7 @@ metadata:
     - resources-finalizer.argocd.argoproj.io
 spec:
   project: default
-  source:
-{source_block}
+{source_key_block}
   destination:
     server: https://kubernetes.default.svc
     namespace: {manifest.resolved_namespace}

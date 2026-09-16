@@ -200,12 +200,26 @@ def install(
 
     _check_requires(ctx, manifest, skip_requires_check)
 
+    # 2026-09-16 (Trino live-verification, manifest.py's own docstring): a module can ship a
+    # one-time, idempotent in-cluster setup step (an Argo PostSync-hook Job) by putting it in
+    # src/modules/<id>/setup/ — convention, not a new module.yaml field, same as chart_path's own
+    # existence check just above. No directory there is by far the common case (every module before
+    # Trino, and most after it) and renders the exact same single-source Application as always.
+    setup_source_dir = repo_root / MODULES_DIR / manifest.id / "setup"
+    setup_dir = f"{MODULES_DIR}/{manifest.id}/setup" if setup_source_dir.is_dir() else None
+
     repo_url = repo_url_override or discover_repo_url(repo_root)
-    application_yaml = render_application_manifest(manifest, repo_url=repo_url, chart_path=chart_path)
+    application_yaml = render_application_manifest(
+        manifest, repo_url=repo_url, chart_path=chart_path, setup_dir=setup_dir
+    )
 
     # Re-derive just the values block for the helm-template check, so what's checked is exactly
-    # what will be pushed, not a second independent computation of it.
-    values_yaml = yaml.safe_load(application_yaml)["spec"]["source"]["helm"]["values"]
+    # what will be pushed, not a second independent computation of it. `spec.sources[0]` (the main
+    # chart) when setup_dir added a second, plain-directory source alongside it (that one has no
+    # `helm:` block at all to read a values key from) — `spec.source` otherwise, same as always.
+    parsed_spec = yaml.safe_load(application_yaml)["spec"]
+    main_source = parsed_spec["sources"][0] if setup_dir is not None else parsed_spec["source"]
+    values_yaml = main_source["helm"]["values"]
     if manifest.externalChart is not None:
         _run_helm_template_external(manifest, values_yaml)
     else:

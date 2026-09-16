@@ -1,0 +1,104 @@
+# 2026-09-16 (Trino live-verification) — creates Iceberg's own JDBC-catalog bookkeeping tables
+# (iceberg_tables, iceberg_namespace_properties) in this module's trino_catalog Postgres database
+# before Trino ever tries to use them.
+#
+# This is NOT optional bootstrapping Trino does for you: since Trino 414, TrinoJdbcCatalogFactory
+# explicitly constructs Iceberg's JdbcCatalog with initializeCatalogTables=false — a deliberate,
+# upstream, "closed as not planned" choice (github.com/trinodb/trino/issues/20419), not a bug. Trino's
+# own docs are explicit about it too (trino.io/docs/current/object-storage/metastores.html, Iceberg
+# JDBC catalog properties: "The JDBC catalog requires the metadata tables to already exist"). Confirmed
+# live the hard way first: SHOW CATALOGS succeeded (the catalog config itself was fine), but any real
+# use of it — CREATE SCHEMA, SHOW SCHEMAS — failed with a PSQLException, "relation \"iceberg_tables\"
+# does not exist", even though the `trino` Postgres role had full CREATE privilege on the database
+# (has_schema_privilege confirmed true) and the database was otherwise completely empty. Iceberg's own
+# JdbcCatalog assumes an operator (or, here, this Job) runs its bootstrap DDL once, itself.
+#
+# DDL below is copied verbatim from Iceberg's own JdbcUtil.java (github.com/apache/iceberg — core/src/
+# main/java/org/apache/iceberg/jdbc/JdbcUtil.java), not reverse-engineered or guessed — the exact
+# CREATE TABLE statements for the base (V0) schema plus the V1 ALTER (adds iceberg_type, the
+# table-vs-view discriminator V1 needs) that iceberg.jdbc-catalog.schema-version defaults to in this
+# Trino version. `IF NOT EXISTS`/`ADD COLUMN IF NOT EXISTS` make every statement here idempotent by
+# construction — safe to run on every PostSync sync, not just the first, no separate "has this already
+# run" check needed.
+#
+# Why a Job instead of running this from `platform module install` itself: platform-cli never talks to
+# the live cluster directly (see platform_cli/module.py's own `_print_purge_command` for that same,
+# already-established boundary) — install() only renders and pushes an Application manifest. Whatever
+# machine runs `platform module install trino` (a laptop, CI) generally has no network path to this
+# cluster's INTERNAL Postgres Service anyway, credentials or not. So this has to run inside the
+# cluster, as part of Argo CD actually syncing the module — an Argo PostSync hook Job is the standard,
+# idiomatic mechanism for exactly this ("run once after the rest of this sync succeeds"), and this
+# cluster already runs several of these for the same reason (ingress-nginx's own admission-create Job,
+# Keycloak's realm-import Job). See platform_cli/manifest.py's own module docstring (2026-09-16 entry)
+# for how this directory gets wired into the generated Application as a second Argo CD source
+# (spec.sources:, multi-source Applications — supported since Argo CD 2.6, this platform runs 3.5.3).
+#
+# Deliberately no `metadata.namespace` here — Argo CD fills in the Application's own
+# `spec.destination.namespace` for any namespaced object that omits one, so this stays correct
+# regardless of what namespace this module (or a future module copying this same setup/ convention)
+# actually installs into, with nothing here to keep in sync by hand.
+#
+# Credentials: the SAME platform-postgres-trino-credentials Secret (keys: username, password) Trino's
+# own coordinator/worker already read via module.yaml's `env:` block — already mirrored into this
+# namespace by Reflector as part of core (postgres-cluster.yaml/trino-database.yaml), so this Job needs
+# no new credential plumbing at all, just to read what's already there.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: trino-iceberg-jdbc-catalog-setup
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    # HookSucceeded (not the default, which also deletes on failure): a failed run stays around so
+    # `kubectl logs`/`describe` on it can actually be inspected — the same reasoning this session's
+    # own live debugging leaned on repeatedly for every other Job in this cluster.
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded
+spec:
+  backoffLimit: 6
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      name: trino-iceberg-jdbc-catalog-setup
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: setup
+          image: postgres:16-alpine
+          env:
+            - name: PGHOST
+              value: platform-postgres-rw.postgres.svc
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: trino_catalog
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: platform-postgres-trino-credentials
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: platform-postgres-trino-credentials
+                  key: password
+          command:
+            - psql
+            - -v
+            - ON_ERROR_STOP=1
+            - -c
+            - |
+              CREATE TABLE IF NOT EXISTS iceberg_tables(
+                catalog_name VARCHAR(255) NOT NULL,
+                table_namespace VARCHAR(255) NOT NULL,
+                table_name VARCHAR(255) NOT NULL,
+                metadata_location VARCHAR(1000),
+                previous_metadata_location VARCHAR(1000),
+                PRIMARY KEY (catalog_name, table_namespace, table_name)
+              );
+              ALTER TABLE iceberg_tables ADD COLUMN IF NOT EXISTS iceberg_type VARCHAR(5);
+              CREATE TABLE IF NOT EXISTS iceberg_namespace_properties(
+                catalog_name VARCHAR(255) NOT NULL,
+                namespace VARCHAR(255) NOT NULL,
+                property_key VARCHAR(255),
+                property_value VARCHAR(1000),
+                PRIMARY KEY (catalog_name, namespace, property_key)
+              );
